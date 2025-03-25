@@ -12,6 +12,7 @@ dependencies = [
     "google-auth-httplib2>=0.2.0",
     "google-auth-oauthlib>=1.2.1",
     "gunicorn>=23.0.0",
+    "openai>=1.68.2",
     "opencv-python>=4.11.0.86",
     "pillow>=11.1.0",
     "plyer>=2.1.0",

@@ -17,6 +17,7 @@ from src.utils.cloud_sync import GoogleDriveSync
 from src.utils.pharmacy_locator import PharmacyLocator
 from src.utils.google_calendar import GoogleCalendarIntegration
 from src.utils.google_sheets import GoogleSheetsIntegration
+from src.utils.xai_assistant import XAIAssistant
 from src.gui import MedicineReminderApp
 
 def setup_logging():
@@ -86,6 +87,13 @@ def main():
     # Initialize Google Sheets integration
     sheets_integration = GoogleSheetsIntegration(db_manager)
     
+    # Initialize XAI Assistant
+    xai_assistant = XAIAssistant()
+    if xai_assistant.is_configured():
+        logger.info("XAI Assistant initialized")
+    else:
+        logger.warning("XAI Assistant not configured (XAI_API_KEY environment variable not set)")
+    
     # Start the notification scheduler
     notifier.start_scheduler()
     logger.info("Notification scheduler started")
@@ -100,7 +108,8 @@ def main():
         drive_sync, 
         pharmacy_locator,
         calendar_integration,
-        sheets_integration
+        sheets_integration,
+        xai_assistant
     )
     
     # Set up application closing handler
