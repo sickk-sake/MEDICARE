@@ -219,7 +219,8 @@ def take_medicine(medicine_id):
 def schedule():
     """Schedule page with calendar view."""
     # Default to current date if not specified
-    date_str = request.args.get('date', datetime.now().strftime("%Y-%m-%d"))
+    current_date = datetime.now()
+    date_str = request.args.get('date', current_date.strftime("%Y-%m-%d"))
     medicines = db_manager.get_medicines_for_date(date_str)
     
     # Generate dates for the week view
@@ -230,13 +231,20 @@ def schedule():
         week_dates.append({
             'date': date.strftime("%Y-%m-%d"),
             'day': date.strftime("%a"),
-            'is_today': date.date() == datetime.now().date()
+            'is_today': date.date() == current_date.date()
         })
+    
+    # Calculate previous and next week dates for navigation
+    prev_week_date = (today - timedelta(days=7)).strftime("%Y-%m-%d")
+    next_week_date = (today + timedelta(days=7)).strftime("%Y-%m-%d")
     
     return render_template('schedule.html', 
                           medicines=medicines, 
                           selected_date=date_str,
-                          week_dates=week_dates)
+                          week_dates=week_dates,
+                          prev_week_date=prev_week_date,
+                          next_week_date=next_week_date,
+                          now_date=current_date.strftime("%Y-%m-%d"))
 
 @app.route('/scan')
 def scan():

@@ -17,13 +17,13 @@
             </div>
             <div class="card-body">
                 <div class="d-flex justify-content-between mb-3">
-                    <a href="{{ url_for('schedule', date=(datetime.strptime(selected_date, '%Y-%m-%d') - day_delta(7)).strftime('%Y-%m-%d')) }}" class="btn btn-outline-primary">
+                    <a href="{{ url_for('schedule', date=prev_week_date) }}" class="btn btn-outline-primary">
                         <i class="fas fa-chevron-left me-1"></i> Previous Week
                     </a>
                     <a href="{{ url_for('schedule') }}" class="btn btn-outline-secondary">
                         Today
                     </a>
-                    <a href="{{ url_for('schedule', date=(datetime.strptime(selected_date, '%Y-%m-%d') + day_delta(7)).strftime('%Y-%m-%d')) }}" class="btn btn-outline-primary">
+                    <a href="{{ url_for('schedule', date=next_week_date) }}" class="btn btn-outline-primary">
                         Next Week <i class="fas fa-chevron-right ms-1"></i>
                     </a>
                 </div>
