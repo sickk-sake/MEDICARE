@@ -3,47 +3,62 @@ import sqlite3
 import logging
 import json
 import datetime
+import psycopg2
 from pathlib import Path
+from urllib.parse import urlparse
 
 class DatabaseManager:
     """
-    A class to handle SQLite database operations for the Medicine Reminder App.
+    A class to handle database operations for the Medicine Reminder App.
+    Supports both SQLite and PostgreSQL.
     """
     
-    def __init__(self, db_path="../data/medicine_database.db"):
+    def __init__(self, db_path=None, db_url=None):
         """
-        Initialize the database manager with the specified database path.
+        Initialize the database manager with either SQLite or PostgreSQL.
         
         Args:
-            db_path (str): Path to the SQLite database file
+            db_path (str, optional): Path to the SQLite database file
+            db_url (str, optional): PostgreSQL connection URL
         """
         self.logger = logging.getLogger(__name__)
         
-        # Ensure the data directory exists
-        data_dir = os.path.dirname(db_path)
-        if data_dir and not os.path.exists(data_dir):
-            os.makedirs(data_dir)
-            
         self.db_path = db_path
+        self.db_url = db_url
         self.connection = None
         self.cursor = None
+        self.is_postgres = db_url is not None
+        self.db_type = 'postgresql' if self.is_postgres else 'sqlite'
+        
+        if self.db_path and not self.is_postgres:
+            # Ensure the data directory exists for SQLite
+            data_dir = os.path.dirname(db_path)
+            if data_dir and not os.path.exists(data_dir):
+                os.makedirs(data_dir)
         
         self._connect()
         self._create_tables()
         
     def _connect(self):
         """
-        Establish a connection to the SQLite database.
+        Establish a connection to the database (SQLite or PostgreSQL).
         """
         try:
-            self.connection = sqlite3.connect(self.db_path, check_same_thread=False)
-            # Enable foreign key constraints
-            self.connection.execute("PRAGMA foreign_keys = ON")
-            # Row factory to get dictionary-like results
-            self.connection.row_factory = sqlite3.Row
-            self.cursor = self.connection.cursor()
-            self.logger.info("Connected to database")
-        except sqlite3.Error as e:
+            if self.is_postgres:
+                # PostgreSQL connection
+                self.connection = psycopg2.connect(self.db_url)
+                self.cursor = self.connection.cursor()
+                self.logger.info("Connected to PostgreSQL database")
+            else:
+                # SQLite connection
+                self.connection = sqlite3.connect(self.db_path, check_same_thread=False)
+                # Enable foreign key constraints
+                self.connection.execute("PRAGMA foreign_keys = ON")
+                # Row factory to get dictionary-like results
+                self.connection.row_factory = sqlite3.Row
+                self.cursor = self.connection.cursor()
+                self.logger.info("Connected to SQLite database")
+        except Exception as e:
             self.logger.error(f"Database connection error: {str(e)}")
             raise
             
@@ -52,76 +67,153 @@ class DatabaseManager:
         Create the necessary tables in the database if they don't exist.
         """
         try:
-            # Create medicine table
-            self.cursor.execute('''
-            CREATE TABLE IF NOT EXISTS medicines (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL,
-                barcode TEXT,
-                dosage TEXT,
-                notes TEXT,
-                expiry_date TEXT,
-                doses_remaining INTEGER,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-            ''')
-            
-            # Create schedule table
-            self.cursor.execute('''
-            CREATE TABLE IF NOT EXISTS schedule (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                medicine_id INTEGER,
-                day_of_week INTEGER,  -- 0=Monday, 6=Sunday, -1=Every day
-                time TEXT NOT NULL,   -- Format: HH:MM
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (medicine_id) REFERENCES medicines(id) ON DELETE CASCADE
-            )
-            ''')
-            
-            # Create logs table for medicine intake
-            self.cursor.execute('''
-            CREATE TABLE IF NOT EXISTS intake_logs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                medicine_id INTEGER,
-                intake_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                taken BOOLEAN DEFAULT 1,
-                notes TEXT,
-                FOREIGN KEY (medicine_id) REFERENCES medicines(id) ON DELETE CASCADE
-            )
-            ''')
-            
-            # Create streak table
-            self.cursor.execute('''
-            CREATE TABLE IF NOT EXISTS streaks (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                current_streak INTEGER DEFAULT 0,
-                longest_streak INTEGER DEFAULT 0,
-                last_taken_date TEXT,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-            ''')
-            
-            # Create user settings table
-            self.cursor.execute('''
-            CREATE TABLE IF NOT EXISTS settings (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                key TEXT UNIQUE,
-                value TEXT,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-            ''')
-            
-            # Insert default streak record if it doesn't exist
-            self.cursor.execute('''
-            INSERT OR IGNORE INTO streaks (id, current_streak, longest_streak) 
-            VALUES (1, 0, 0)
-            ''')
+            if self.is_postgres:
+                # PostgreSQL tables
+                
+                # Create medicine table
+                self.cursor.execute('''
+                CREATE TABLE IF NOT EXISTS medicines (
+                    id SERIAL PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    barcode TEXT,
+                    dosage TEXT,
+                    notes TEXT,
+                    expiry_date TEXT,
+                    doses_remaining INTEGER,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                ''')
+                
+                # Create schedule table
+                self.cursor.execute('''
+                CREATE TABLE IF NOT EXISTS schedule (
+                    id SERIAL PRIMARY KEY,
+                    medicine_id INTEGER,
+                    day_of_week INTEGER,  -- 0=Monday, 6=Sunday, -1=Every day
+                    time TEXT NOT NULL,   -- Format: HH:MM
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (medicine_id) REFERENCES medicines(id) ON DELETE CASCADE
+                )
+                ''')
+                
+                # Create logs table for medicine intake
+                self.cursor.execute('''
+                CREATE TABLE IF NOT EXISTS intake_logs (
+                    id SERIAL PRIMARY KEY,
+                    medicine_id INTEGER,
+                    intake_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    taken BOOLEAN DEFAULT TRUE,
+                    notes TEXT,
+                    FOREIGN KEY (medicine_id) REFERENCES medicines(id) ON DELETE CASCADE
+                )
+                ''')
+                
+                # Create streak table
+                self.cursor.execute('''
+                CREATE TABLE IF NOT EXISTS streaks (
+                    id SERIAL PRIMARY KEY,
+                    current_streak INTEGER DEFAULT 0,
+                    longest_streak INTEGER DEFAULT 0,
+                    last_taken_date TEXT,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                ''')
+                
+                # Create user settings table
+                self.cursor.execute('''
+                CREATE TABLE IF NOT EXISTS settings (
+                    id SERIAL PRIMARY KEY,
+                    key TEXT UNIQUE,
+                    value TEXT,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                ''')
+                
+                # Check if there's a streak record
+                self.cursor.execute("SELECT COUNT(*) FROM streaks")
+                count = self.cursor.fetchone()[0]
+                
+                # Insert default streak record if it doesn't exist
+                if count == 0:
+                    self.cursor.execute('''
+                    INSERT INTO streaks (id, current_streak, longest_streak) 
+                    VALUES (1, 0, 0)
+                    ''')
+                
+            else:
+                # SQLite tables
+                
+                # Create medicine table
+                self.cursor.execute('''
+                CREATE TABLE IF NOT EXISTS medicines (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    barcode TEXT,
+                    dosage TEXT,
+                    notes TEXT,
+                    expiry_date TEXT,
+                    doses_remaining INTEGER,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                ''')
+                
+                # Create schedule table
+                self.cursor.execute('''
+                CREATE TABLE IF NOT EXISTS schedule (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    medicine_id INTEGER,
+                    day_of_week INTEGER,  -- 0=Monday, 6=Sunday, -1=Every day
+                    time TEXT NOT NULL,   -- Format: HH:MM
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (medicine_id) REFERENCES medicines(id) ON DELETE CASCADE
+                )
+                ''')
+                
+                # Create logs table for medicine intake
+                self.cursor.execute('''
+                CREATE TABLE IF NOT EXISTS intake_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    medicine_id INTEGER,
+                    intake_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    taken BOOLEAN DEFAULT 1,
+                    notes TEXT,
+                    FOREIGN KEY (medicine_id) REFERENCES medicines(id) ON DELETE CASCADE
+                )
+                ''')
+                
+                # Create streak table
+                self.cursor.execute('''
+                CREATE TABLE IF NOT EXISTS streaks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    current_streak INTEGER DEFAULT 0,
+                    longest_streak INTEGER DEFAULT 0,
+                    last_taken_date TEXT,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                ''')
+                
+                # Create user settings table
+                self.cursor.execute('''
+                CREATE TABLE IF NOT EXISTS settings (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    key TEXT UNIQUE,
+                    value TEXT,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                ''')
+                
+                # Insert default streak record if it doesn't exist
+                self.cursor.execute('''
+                INSERT OR IGNORE INTO streaks (id, current_streak, longest_streak) 
+                VALUES (1, 0, 0)
+                ''')
             
             self.connection.commit()
             self.logger.info("Database tables created successfully")
             
-        except sqlite3.Error as e:
+        except Exception as e:
             self.logger.error(f"Error creating database tables: {str(e)}")
             self.connection.rollback()
             raise
@@ -441,17 +533,31 @@ class DatabaseManager:
         try:
             today = datetime.datetime.now().weekday()  # 0=Monday, 6=Sunday
             
-            self.cursor.execute('''
-            SELECT m.*, s.time
-            FROM medicines m
-            JOIN schedule s ON m.id = s.medicine_id
-            WHERE s.time = ? AND (s.day_of_week = -1 OR s.day_of_week = ?)
-            ''', (time, today))
+            if self.db_type == 'sqlite':
+                self.cursor.execute('''
+                SELECT m.*, s.time
+                FROM medicines m
+                JOIN schedule s ON m.id = s.medicine_id
+                WHERE s.time = ? AND (s.day_of_week = -1 OR s.day_of_week = ?)
+                ''', (time, today))
+            else:  # PostgreSQL
+                self.cursor.execute('''
+                SELECT m.*, s.time
+                FROM medicines m
+                JOIN schedule s ON m.id = s.medicine_id
+                WHERE s.time = %s AND (s.day_of_week = -1 OR s.day_of_week = %s)
+                ''', (time, today))
             
             rows = self.cursor.fetchall()
-            return [dict(row) for row in rows]
             
-        except sqlite3.Error as e:
+            # Convert to dictionaries based on database type
+            if self.db_type == 'sqlite':
+                return [dict(row) for row in rows]
+            else:  # PostgreSQL
+                columns = [desc[0] for desc in self.cursor.description]
+                return [dict(zip(columns, row)) for row in rows]
+            
+        except (sqlite3.Error, psycopg2.Error) as e:
             self.logger.error(f"Error getting medicines for time: {str(e)}")
             return []
             
@@ -470,18 +576,40 @@ class DatabaseManager:
             date_obj = datetime.datetime.strptime(date, "%Y-%m-%d")
             day_of_week = date_obj.weekday()  # 0=Monday, 6=Sunday
             
-            self.cursor.execute('''
-            SELECT m.id, m.name, m.dosage, s.time
-            FROM medicines m
-            JOIN schedule s ON m.id = s.medicine_id
-            WHERE s.day_of_week = -1 OR s.day_of_week = ?
-            ORDER BY s.time
-            ''', (day_of_week,))
+            if self.db_type == 'sqlite':
+                self.cursor.execute('''
+                SELECT m.id, m.name, m.dosage, s.time
+                FROM medicines m
+                JOIN schedule s ON m.id = s.medicine_id
+                WHERE s.day_of_week = -1 OR s.day_of_week = ?
+                ORDER BY s.time
+                ''', (day_of_week,))
+            else:  # PostgreSQL
+                self.cursor.execute('''
+                SELECT m.id, m.name, m.dosage, s.time
+                FROM medicines m
+                JOIN schedule s ON m.id = s.medicine_id
+                WHERE s.day_of_week = -1 OR s.day_of_week = %s
+                ORDER BY s.time
+                ''', (day_of_week,))
             
             rows = self.cursor.fetchall()
-            return [dict(row) for row in rows]
             
-        except sqlite3.Error as e:
+            # Convert to dictionaries
+            if self.db_type == 'sqlite':
+                return [dict(row) for row in rows]
+            else:  # PostgreSQL
+                result = []
+                for row in rows:
+                    result.append({
+                        'id': row[0],
+                        'name': row[1],
+                        'dosage': row[2],
+                        'time': row[3]
+                    })
+                return result
+                
+        except (sqlite3.Error, psycopg2.Error) as e:
             self.logger.error(f"Error getting medicines for date: {str(e)}")
             return []
             
@@ -499,17 +627,31 @@ class DatabaseManager:
             today = datetime.datetime.now().strftime("%Y-%m-%d")
             future_date = (datetime.datetime.now() + datetime.timedelta(days=days)).strftime("%Y-%m-%d")
             
-            self.cursor.execute('''
-            SELECT * FROM medicines
-            WHERE expiry_date IS NOT NULL 
-            AND expiry_date BETWEEN ? AND ?
-            ORDER BY expiry_date
-            ''', (today, future_date))
+            if self.db_type == 'sqlite':
+                self.cursor.execute('''
+                SELECT * FROM medicines
+                WHERE expiry_date IS NOT NULL 
+                AND expiry_date BETWEEN ? AND ?
+                ORDER BY expiry_date
+                ''', (today, future_date))
+            else:  # PostgreSQL
+                self.cursor.execute('''
+                SELECT * FROM medicines
+                WHERE expiry_date IS NOT NULL 
+                AND expiry_date BETWEEN %s AND %s
+                ORDER BY expiry_date
+                ''', (today, future_date))
             
             rows = self.cursor.fetchall()
-            return [dict(row) for row in rows]
             
-        except sqlite3.Error as e:
+            # Convert to dictionaries based on database type
+            if self.db_type == 'sqlite':
+                return [dict(row) for row in rows]
+            else:  # PostgreSQL
+                columns = [desc[0] for desc in self.cursor.description]
+                return [dict(zip(columns, row)) for row in rows]
+                
+        except (sqlite3.Error, psycopg2.Error) as e:
             self.logger.error(f"Error getting expiring medicines: {str(e)}")
             return []
             
@@ -526,21 +668,40 @@ class DatabaseManager:
             int: ID of the log entry or None if error
         """
         try:
-            self.cursor.execute('''
-            INSERT INTO intake_logs (medicine_id, taken, notes)
-            VALUES (?, ?, ?)
-            ''', (medicine_id, 1 if taken else 0, notes))
-            
-            # If taken, decrement doses_remaining
-            if taken:
+            if self.db_type == 'sqlite':
                 self.cursor.execute('''
-                UPDATE medicines
-                SET doses_remaining = doses_remaining - 1
-                WHERE id = ? AND doses_remaining IS NOT NULL AND doses_remaining > 0
-                ''', (medicine_id,))
+                INSERT INTO intake_logs (medicine_id, taken, notes)
+                VALUES (?, ?, ?)
+                ''', (medicine_id, 1 if taken else 0, notes))
                 
-            self.connection.commit()
-            log_id = self.cursor.lastrowid
+                # If taken, decrement doses_remaining
+                if taken:
+                    self.cursor.execute('''
+                    UPDATE medicines
+                    SET doses_remaining = doses_remaining - 1
+                    WHERE id = ? AND doses_remaining IS NOT NULL AND doses_remaining > 0
+                    ''', (medicine_id,))
+                    
+                self.connection.commit()
+                log_id = self.cursor.lastrowid
+            else:  # PostgreSQL
+                self.cursor.execute('''
+                INSERT INTO intake_logs (medicine_id, taken, notes)
+                VALUES (%s, %s, %s) RETURNING id
+                ''', (medicine_id, True if taken else False, notes))
+                
+                # Get the ID from the RETURNING clause
+                log_id = self.cursor.fetchone()[0]
+                
+                # If taken, decrement doses_remaining
+                if taken:
+                    self.cursor.execute('''
+                    UPDATE medicines
+                    SET doses_remaining = doses_remaining - 1
+                    WHERE id = %s AND doses_remaining IS NOT NULL AND doses_remaining > 0
+                    ''', (medicine_id,))
+                    
+                self.connection.commit()
             
             # Update streak
             self._update_streak(taken)
@@ -548,7 +709,7 @@ class DatabaseManager:
             self.logger.info(f"Logged medicine intake: ID {medicine_id}, taken: {taken}")
             return log_id
             
-        except sqlite3.Error as e:
+        except (sqlite3.Error, psycopg2.Error) as e:
             self.logger.error(f"Error logging medicine intake: {str(e)}")
             self.connection.rollback()
             return None
@@ -564,7 +725,14 @@ class DatabaseManager:
             today = datetime.datetime.now().strftime("%Y-%m-%d")
             
             self.cursor.execute("SELECT * FROM streaks WHERE id = 1")
-            streak_data = dict(self.cursor.fetchone())
+            row = self.cursor.fetchone()
+            
+            # Convert row to dictionary based on database type
+            if self.db_type == 'sqlite':
+                streak_data = dict(row)
+            else:  # PostgreSQL
+                columns = [desc[0] for desc in self.cursor.description]
+                streak_data = dict(zip(columns, row))
             
             current_streak = streak_data.get('current_streak', 0)
             longest_streak = streak_data.get('longest_streak', 0)
@@ -592,15 +760,22 @@ class DatabaseManager:
                 longest_streak = max(longest_streak, current_streak)
                 
                 # Update last taken date to today
-                self.cursor.execute('''
-                UPDATE streaks
-                SET current_streak = ?, longest_streak = ?, last_taken_date = ?, updated_at = CURRENT_TIMESTAMP
-                WHERE id = 1
-                ''', (current_streak, longest_streak, today))
+                if self.db_type == 'sqlite':
+                    self.cursor.execute('''
+                    UPDATE streaks
+                    SET current_streak = ?, longest_streak = ?, last_taken_date = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = 1
+                    ''', (current_streak, longest_streak, today))
+                else:  # PostgreSQL
+                    self.cursor.execute('''
+                    UPDATE streaks
+                    SET current_streak = %s, longest_streak = %s, last_taken_date = %s, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = 1
+                    ''', (current_streak, longest_streak, today))
                 
             self.connection.commit()
             
-        except sqlite3.Error as e:
+        except (sqlite3.Error, psycopg2.Error) as e:
             self.logger.error(f"Error updating streak: {str(e)}")
             self.connection.rollback()
             
@@ -614,9 +789,17 @@ class DatabaseManager:
         try:
             self.cursor.execute("SELECT current_streak, longest_streak FROM streaks WHERE id = 1")
             row = self.cursor.fetchone()
-            return dict(row) if row else {'current_streak': 0, 'longest_streak': 0}
             
-        except sqlite3.Error as e:
+            if row:
+                if self.db_type == 'sqlite':
+                    return dict(row)
+                else:  # PostgreSQL
+                    columns = [desc[0] for desc in self.cursor.description]
+                    return dict(zip(columns, row))
+            else:
+                return {'current_streak': 0, 'longest_streak': 0}
+            
+        except (sqlite3.Error, psycopg2.Error) as e:
             self.logger.error(f"Error getting streak: {str(e)}")
             return {'current_streak': 0, 'longest_streak': 0}
             
@@ -633,7 +816,7 @@ class DatabaseManager:
             list: List of log dictionaries
         """
         try:
-            query = '''
+            base_query = '''
             SELECT l.*, m.name as medicine_name
             FROM intake_logs l
             JOIN medicines m ON l.medicine_id = m.id
@@ -641,19 +824,27 @@ class DatabaseManager:
             
             conditions = []
             params = []
+            placeholder = "?" if self.db_type == 'sqlite' else "%s"
             
             if medicine_id is not None:
-                conditions.append("l.medicine_id = ?")
+                conditions.append(f"l.medicine_id = {placeholder}")
                 params.append(medicine_id)
                 
             if start_date:
-                conditions.append("DATE(l.intake_time) >= ?")
+                if self.db_type == 'sqlite':
+                    conditions.append(f"DATE(l.intake_time) >= {placeholder}")
+                else:  # PostgreSQL
+                    conditions.append(f"DATE(l.intake_time) >= {placeholder}::date")
                 params.append(start_date)
                 
             if end_date:
-                conditions.append("DATE(l.intake_time) <= ?")
+                if self.db_type == 'sqlite':
+                    conditions.append(f"DATE(l.intake_time) <= {placeholder}")
+                else:  # PostgreSQL
+                    conditions.append(f"DATE(l.intake_time) <= {placeholder}::date")
                 params.append(end_date)
                 
+            query = base_query
             if conditions:
                 query += " WHERE " + " AND ".join(conditions)
                 
@@ -661,9 +852,15 @@ class DatabaseManager:
             
             self.cursor.execute(query, params)
             rows = self.cursor.fetchall()
-            return [dict(row) for row in rows]
             
-        except sqlite3.Error as e:
+            # Convert to dictionaries based on database type
+            if self.db_type == 'sqlite':
+                return [dict(row) for row in rows]
+            else:  # PostgreSQL
+                columns = [desc[0] for desc in self.cursor.description]
+                return [dict(zip(columns, row)) for row in rows]
+            
+        except (sqlite3.Error, psycopg2.Error) as e:
             self.logger.error(f"Error getting intake logs: {str(e)}")
             return []
             
@@ -682,16 +879,33 @@ class DatabaseManager:
             # Convert value to JSON string
             json_value = json.dumps(value)
             
-            self.cursor.execute('''
-            INSERT OR REPLACE INTO settings (key, value, updated_at)
-            VALUES (?, ?, CURRENT_TIMESTAMP)
-            ''', (key, json_value))
+            if self.db_type == 'sqlite':
+                self.cursor.execute('''
+                INSERT OR REPLACE INTO settings (key, value, updated_at)
+                VALUES (?, ?, CURRENT_TIMESTAMP)
+                ''', (key, json_value))
+            else:  # PostgreSQL
+                # Check if the setting already exists
+                self.cursor.execute("SELECT 1 FROM settings WHERE key = %s", (key,))
+                exists = self.cursor.fetchone()
+                
+                if exists:
+                    self.cursor.execute('''
+                    UPDATE settings 
+                    SET value = %s, updated_at = CURRENT_TIMESTAMP
+                    WHERE key = %s
+                    ''', (json_value, key))
+                else:
+                    self.cursor.execute('''
+                    INSERT INTO settings (key, value, updated_at)
+                    VALUES (%s, %s, CURRENT_TIMESTAMP)
+                    ''', (key, json_value))
             
             self.connection.commit()
             self.logger.info(f"Saved setting: {key}")
             return True
             
-        except sqlite3.Error as e:
+        except (sqlite3.Error, psycopg2.Error) as e:
             self.logger.error(f"Error saving setting: {str(e)}")
             self.connection.rollback()
             return False
@@ -708,16 +922,24 @@ class DatabaseManager:
             The setting value or default if not found
         """
         try:
-            self.cursor.execute("SELECT value FROM settings WHERE key = ?", (key,))
+            if self.db_type == 'sqlite':
+                self.cursor.execute("SELECT value FROM settings WHERE key = ?", (key,))
+            else:  # PostgreSQL
+                self.cursor.execute("SELECT value FROM settings WHERE key = %s", (key,))
+                
             row = self.cursor.fetchone()
             
             if row:
                 # Parse the JSON value
-                return json.loads(row['value'])
+                if self.db_type == 'sqlite':
+                    return json.loads(row['value'])
+                else:  # PostgreSQL
+                    # PostgreSQL returns values based on column position
+                    return json.loads(row[0])
             else:
                 return default
                 
-        except (sqlite3.Error, json.JSONDecodeError) as e:
+        except (sqlite3.Error, psycopg2.Error, json.JSONDecodeError) as e:
             self.logger.error(f"Error getting setting {key}: {str(e)}")
             return default
             
@@ -764,8 +986,12 @@ class DatabaseManager:
                     })
                     
             # Count total medicines taken
-            self.cursor.execute("SELECT COUNT(*) as count FROM intake_logs WHERE taken = 1")
-            total_taken = self.cursor.fetchone()['count']
+            if self.db_type == 'sqlite':
+                self.cursor.execute("SELECT COUNT(*) as count FROM intake_logs WHERE taken = 1")
+                total_taken = self.cursor.fetchone()['count']
+            else:  # PostgreSQL
+                self.cursor.execute("SELECT COUNT(*) FROM intake_logs WHERE taken = TRUE")
+                total_taken = self.cursor.fetchone()[0]
             
             intake_levels = [
                 (10, "Getting Started", "Took 10 doses of medicine"),
@@ -794,6 +1020,6 @@ class DatabaseManager:
                     
             return badges
             
-        except sqlite3.Error as e:
+        except (sqlite3.Error, psycopg2.Error) as e:
             self.logger.error(f"Error getting badges: {str(e)}")
             return []

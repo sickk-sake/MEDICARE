@@ -40,8 +40,11 @@ class GoogleCalendarIntegration:
         if token_path:
             self.token_path = token_path
         else:
-            db_dir = os.path.dirname(db_manager.db_path)
-            self.token_path = os.path.join(db_dir, "calendar_token.json")
+            # Create a data directory for tokens if needed
+            data_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data")
+            if not os.path.exists(data_dir):
+                os.makedirs(data_dir)
+            self.token_path = os.path.join(data_dir, "calendar_token.json")
             
     def is_authenticated(self):
         """

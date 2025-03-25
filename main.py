@@ -29,9 +29,14 @@ if not os.path.exists(data_dir):
     os.makedirs(data_dir)
 
 # Initialize database
-db_path = os.path.join(data_dir, "medicine_database.db")
-db_manager = DatabaseManager(db_path)
-logger.info(f"Database initialized at {db_path}")
+# Use PostgreSQL if DATABASE_URL is available, otherwise use SQLite
+if os.environ.get("DATABASE_URL"):
+    db_manager = DatabaseManager(db_url=os.environ.get("DATABASE_URL"))
+    logger.info("Using PostgreSQL database")
+else:
+    db_path = os.path.join(data_dir, "medicine_database.db")
+    db_manager = DatabaseManager(db_path=db_path)
+    logger.info(f"Database initialized at {db_path}")
 
 # Initialize notifier
 notifier = MedicineNotifier(db_manager)
@@ -45,7 +50,16 @@ else:
     logger.warning("Telegram bot not configured (TELEGRAM_BOT_TOKEN environment variable not set)")
 
 # Initialize Google Drive sync
-drive_sync = GoogleDriveSync(db_manager.db_path)
+if hasattr(db_manager, 'db_path') and db_manager.db_path:
+    # SQLite is being used
+    drive_sync = GoogleDriveSync(db_manager.db_path)
+    logger.info(f"Google Drive sync initialized with SQLite database at {db_manager.db_path}")
+else:
+    # PostgreSQL is being used, initialize without specific path
+    # Create a temporary SQLite database for sync purposes
+    temp_db_path = os.path.join(data_dir, "temp_sync_database.db")
+    drive_sync = GoogleDriveSync(temp_db_path)
+    logger.info("Google Drive sync initialized for PostgreSQL database (using temp file for sync)")
 
 # Initialize Pharmacy Locator
 pharmacy_locator = PharmacyLocator()
