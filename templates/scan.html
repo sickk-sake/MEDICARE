@@ -1,0 +1,151 @@
+{% extends 'base.html' %}
+
+{% block title %}Barcode Scanner - Medicine Reminder App{% endblock %}
+
+{% block content %}
+<div class="row mb-4">
+    <div class="col">
+        <h2>Barcode Scanner</h2>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-lg-8">
+        <div class="card shadow mb-4">
+            <div class="card-header bg-primary text-white">
+                <h4 class="mb-0"><i class="fas fa-camera me-2"></i>Scan Barcode</h4>
+            </div>
+            <div class="card-body">
+                <div class="alert alert-info">
+                    <p>Since we can't access your camera directly in this web interface, you can:</p>
+                    <ol class="mb-0">
+                        <li>Upload an image containing a barcode</li>
+                        <li>Or manually enter a barcode number</li>
+                    </ol>
+                </div>
+                
+                <div class="mb-4">
+                    <h5>Upload Image with Barcode</h5>
+                    <div class="mb-3">
+                        <input class="form-control" type="file" id="barcode-image" accept="image/*">
+                    </div>
+                    <div id="camera-view" class="mb-3">
+                        <span id="camera-placeholder">Image preview will appear here</span>
+                        <img id="preview-image" style="display: none; max-width: 100%; max-height: 300px;">
+                    </div>
+                    <button class="btn btn-primary" id="scan-image" disabled>
+                        <i class="fas fa-search me-1"></i> Scan Image
+                    </button>
+                    <div id="scanning-status" class="mt-2"></div>
+                </div>
+                
+                <div class="mb-3">
+                    <h5>Manual Barcode Entry</h5>
+                    <form action="{{ url_for('process_scan') }}" method="post">
+                        <div class="input-group mb-3">
+                            <input type="text" class="form-control" id="barcode" name="barcode" placeholder="Enter barcode number">
+                            <button class="btn btn-primary" type="submit">
+                                <i class="fas fa-search me-1"></i> Find Medicine
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-lg-4">
+        <div class="card shadow">
+            <div class="card-header bg-info text-white">
+                <h4 class="mb-0"><i class="fas fa-info-circle me-2"></i>Scanning Tips</h4>
+            </div>
+            <div class="card-body">
+                <ul class="list-group list-group-flush">
+                    <li class="list-group-item">Ensure the barcode is clearly visible in the image</li>
+                    <li class="list-group-item">Avoid shadows or glare on the barcode</li>
+                    <li class="list-group-item">Position the barcode straight in the image</li>
+                    <li class="list-group-item">Make sure the entire barcode is in the frame</li>
+                    <li class="list-group-item">For best results, use good lighting</li>
+                </ul>
+                
+                <div class="alert alert-warning mt-3">
+                    <p class="mb-0">
+                        <i class="fas fa-exclamation-triangle me-1"></i>
+                        If the barcode doesn't scan, try manually entering the number printed below the barcode
+                    </p>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        const barcodeImage = document.getElementById('barcode-image');
+        const previewImage = document.getElementById('preview-image');
+        const cameraPlaceholder = document.getElementById('camera-placeholder');
+        const scanButton = document.getElementById('scan-image');
+        const scanningStatus = document.getElementById('scanning-status');
+        
+        // Preview image when selected
+        barcodeImage.addEventListener('change', function(e) {
+            if (this.files && this.files[0]) {
+                const reader = new FileReader();
+                
+                reader.onload = function(e) {
+                    previewImage.src = e.target.result;
+                    previewImage.style.display = 'block';
+                    cameraPlaceholder.style.display = 'none';
+                    scanButton.disabled = false;
+                }
+                
+                reader.readAsDataURL(this.files[0]);
+            }
+        });
+        
+        // Handle scan button click
+        scanButton.addEventListener('click', function() {
+            if (!barcodeImage.files || !barcodeImage.files[0]) {
+                return;
+            }
+            
+            scanningStatus.innerHTML = '<div class="spinner-border spinner-border-sm text-primary" role="status"></div> Scanning...';
+            
+            const formData = new FormData();
+            formData.append('image', barcodeImage.files[0]);
+            
+            fetch('/scan/upload', {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    scanningStatus.innerHTML = `<div class="alert alert-success">Barcode found: ${data.barcode} (${data.type})</div>`;
+                    
+                    // Redirect to process the barcode
+                    const form = document.createElement('form');
+                    form.method = 'POST';
+                    form.action = "{{ url_for('process_scan') }}";
+                    
+                    const input = document.createElement('input');
+                    input.type = 'hidden';
+                    input.name = 'barcode';
+                    input.value = data.barcode;
+                    
+                    form.appendChild(input);
+                    document.body.appendChild(form);
+                    form.submit();
+                } else {
+                    scanningStatus.innerHTML = `<div class="alert alert-danger">Error: ${data.error}</div>`;
+                }
+            })
+            .catch(error => {
+                scanningStatus.innerHTML = `<div class="alert alert-danger">Error: ${error.message}</div>`;
+            });
+        });
+    });
+</script>
+{% endblock %}

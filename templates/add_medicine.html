@@ -1,0 +1,144 @@
+{% extends 'base.html' %}
+
+{% block title %}Add Medicine - Medicine Reminder App{% endblock %}
+
+{% block content %}
+<div class="row mb-4">
+    <div class="col">
+        <h2>Add New Medicine</h2>
+        <a href="{{ url_for('medicines') }}" class="btn btn-secondary">
+            <i class="fas fa-arrow-left me-1"></i> Back to Medicines
+        </a>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-lg-12">
+        <div class="card shadow">
+            <div class="card-header bg-primary text-white">
+                <h4 class="mb-0"><i class="fas fa-plus-circle me-2"></i>New Medicine Information</h4>
+            </div>
+            <div class="card-body">
+                <form action="{{ url_for('add_medicine') }}" method="post">
+                    <div class="row mb-3">
+                        <div class="col-md-6">
+                            <label for="name" class="form-label">Medicine Name *</label>
+                            <input type="text" class="form-control" id="name" name="name" required>
+                        </div>
+                        <div class="col-md-6">
+                            <label for="barcode" class="form-label">Barcode</label>
+                            <div class="input-group">
+                                <input type="text" class="form-control" id="barcode" name="barcode" value="{{ session.pop('scanned_barcode', '') }}">
+                                <a href="{{ url_for('scan') }}" class="btn btn-outline-secondary">
+                                    <i class="fas fa-barcode me-1"></i> Scan
+                                </a>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="row mb-3">
+                        <div class="col-md-6">
+                            <label for="dosage" class="form-label">Dosage</label>
+                            <input type="text" class="form-control" id="dosage" name="dosage" placeholder="e.g., 500mg, 2 tablets">
+                        </div>
+                        <div class="col-md-6">
+                            <label for="doses_remaining" class="form-label">Doses Remaining</label>
+                            <input type="number" class="form-control" id="doses_remaining" name="doses_remaining" min="0">
+                        </div>
+                    </div>
+                    
+                    <div class="row mb-3">
+                        <div class="col-md-6">
+                            <label for="expiry_date" class="form-label">Expiry Date</label>
+                            <input type="date" class="form-control" id="expiry_date" name="expiry_date">
+                        </div>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label for="notes" class="form-label">Notes</label>
+                        <textarea class="form-control" id="notes" name="notes" rows="3" placeholder="Additional information about the medicine"></textarea>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label class="form-label">Schedule</label>
+                        <div id="schedule-container">
+                            <div class="row mb-2 schedule-row">
+                                <div class="col-md-6">
+                                    <div class="input-group">
+                                        <span class="input-group-text">Time</span>
+                                        <input type="time" class="form-control" name="time[]">
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="input-group">
+                                        <span class="input-group-text">Day</span>
+                                        <select class="form-select" name="day[]">
+                                            <option value="-1" selected>Every day</option>
+                                            <option value="0">Monday</option>
+                                            <option value="1">Tuesday</option>
+                                            <option value="2">Wednesday</option>
+                                            <option value="3">Thursday</option>
+                                            <option value="4">Friday</option>
+                                            <option value="5">Saturday</option>
+                                            <option value="6">Sunday</option>
+                                        </select>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <button type="button" class="btn btn-outline-primary" id="add-schedule">
+                            <i class="fas fa-plus me-1"></i> Add Schedule Time
+                        </button>
+                    </div>
+                    
+                    <div class="d-grid gap-2">
+                        <button type="submit" class="btn btn-primary">Save Medicine</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    document.getElementById('add-schedule').addEventListener('click', function() {
+        const container = document.getElementById('schedule-container');
+        const newRow = document.createElement('div');
+        newRow.className = 'row mb-2 schedule-row';
+        newRow.innerHTML = `
+            <div class="col-md-6">
+                <div class="input-group">
+                    <span class="input-group-text">Time</span>
+                    <input type="time" class="form-control" name="time[]">
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="input-group">
+                    <span class="input-group-text">Day</span>
+                    <select class="form-select" name="day[]">
+                        <option value="-1" selected>Every day</option>
+                        <option value="0">Monday</option>
+                        <option value="1">Tuesday</option>
+                        <option value="2">Wednesday</option>
+                        <option value="3">Thursday</option>
+                        <option value="4">Friday</option>
+                        <option value="5">Saturday</option>
+                        <option value="6">Sunday</option>
+                    </select>
+                    <button type="button" class="btn btn-outline-danger remove-schedule">
+                        <i class="fas fa-times"></i>
+                    </button>
+                </div>
+            </div>
+        `;
+        container.appendChild(newRow);
+        
+        // Add event listener to remove button
+        newRow.querySelector('.remove-schedule').addEventListener('click', function() {
+            container.removeChild(newRow);
+        });
+    });
+</script>
+{% endblock %}

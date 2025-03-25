@@ -1,0 +1,116 @@
+{% extends 'base.html' %}
+
+{% block title %}Home - Medicine Reminder App{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-lg-8">
+        <div class="card shadow mb-4">
+            <div class="card-header bg-primary text-white">
+                <h4 class="mb-0"><i class="fas fa-pills me-2"></i>Today's Medicines</h4>
+            </div>
+            <div class="card-body">
+                <h5 class="text-muted mb-3">{{ current_date }}</h5>
+                <div class="medicine-list">
+                    {% if medicines %}
+                        {% for medicine in medicines %}
+                            <div class="card mb-3">
+                                <div class="card-body">
+                                    <div class="d-flex justify-content-between align-items-center">
+                                        <div>
+                                            <h5 class="card-title">{{ medicine.name }}</h5>
+                                            {% if medicine.dosage %}
+                                                <p class="card-text text-muted"><strong>Dosage:</strong> {{ medicine.dosage }}</p>
+                                            {% endif %}
+                                            <p class="card-text">
+                                                <strong>Time:</strong> 
+                                                {% for schedule_time in medicine.times %}
+                                                    <span class="badge bg-info me-1">{{ schedule_time }}</span>
+                                                {% endfor %}
+                                            </p>
+                                            {% if medicine.notes %}
+                                                <p class="card-text"><small>{{ medicine.notes }}</small></p>
+                                            {% endif %}
+                                        </div>
+                                        <div>
+                                            <form action="{{ url_for('take_medicine', medicine_id=medicine.id) }}" method="post">
+                                                <button type="submit" class="btn btn-success">
+                                                    <i class="fas fa-check me-1"></i>Take
+                                                </button>
+                                            </form>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        {% endfor %}
+                    {% else %}
+                        <div class="alert alert-info">
+                            <p class="mb-0">No medicines scheduled for today</p>
+                        </div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-lg-4">
+        <div class="card shadow mb-4">
+            <div class="card-header bg-success text-white">
+                <h4 class="mb-0"><i class="fas fa-fire me-2"></i>Streak Information</h4>
+            </div>
+            <div class="card-body text-center">
+                <div class="mb-4">
+                    <h5>Current Streak</h5>
+                    <span class="badge bg-primary badge-streak">{{ streak_info.current_streak }} days</span>
+                </div>
+                <div>
+                    <h5>Longest Streak</h5>
+                    <span class="badge bg-success badge-streak">{{ streak_info.longest_streak }} days</span>
+                </div>
+            </div>
+        </div>
+        
+        <div class="card shadow">
+            <div class="card-header bg-warning text-dark">
+                <h4 class="mb-0"><i class="fas fa-medal me-2"></i>Achievements</h4>
+            </div>
+            <div class="card-body">
+                <div class="d-flex flex-wrap justify-content-center">
+                    {% if streak_info.current_streak >= 3 %}
+                        <div class="text-center m-2">
+                            <div class="mb-2">
+                                <i class="fas fa-award fa-3x text-warning"></i>
+                            </div>
+                            <div>3-Day Streak</div>
+                        </div>
+                    {% endif %}
+                    
+                    {% if streak_info.current_streak >= 7 %}
+                        <div class="text-center m-2">
+                            <div class="mb-2">
+                                <i class="fas fa-trophy fa-3x text-warning"></i>
+                            </div>
+                            <div>Week Warrior</div>
+                        </div>
+                    {% endif %}
+                    
+                    {% if streak_info.current_streak >= 30 %}
+                        <div class="text-center m-2">
+                            <div class="mb-2">
+                                <i class="fas fa-crown fa-3x text-warning"></i>
+                            </div>
+                            <div>Month Master</div>
+                        </div>
+                    {% endif %}
+                    
+                    {% if streak_info.longest_streak < 3 %}
+                        <div class="alert alert-info">
+                            <p class="mb-0">Keep taking your medicines to earn achievements!</p>
+                        </div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

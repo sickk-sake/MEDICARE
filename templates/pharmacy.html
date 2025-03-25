@@ -1,0 +1,70 @@
+{% extends 'base.html' %}
+
+{% block title %}Find Pharmacy - Medicine Reminder App{% endblock %}
+
+{% block content %}
+<div class="row mb-4">
+    <div class="col">
+        <h2>Find Nearby Pharmacies</h2>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-lg-6">
+        <div class="card shadow">
+            <div class="card-header bg-primary text-white">
+                <h4 class="mb-0"><i class="fas fa-search-location me-2"></i>Search for Pharmacies</h4>
+            </div>
+            <div class="card-body">
+                <form action="{{ url_for('search_pharmacy') }}" method="post">
+                    <div class="mb-3">
+                        <label for="location" class="form-label">Location</label>
+                        <input type="text" class="form-control" id="location" name="location" placeholder="Enter address, city, or postal code" required>
+                    </div>
+                    <div class="mb-3">
+                        <label for="radius" class="form-label">Search Radius (meters)</label>
+                        <select class="form-select" id="radius" name="radius">
+                            <option value="1000">1 km</option>
+                            <option value="2000">2 km</option>
+                            <option value="5000" selected>5 km</option>
+                            <option value="10000">10 km</option>
+                            <option value="20000">20 km</option>
+                        </select>
+                    </div>
+                    <div class="d-grid">
+                        <button type="submit" class="btn btn-primary">
+                            <i class="fas fa-search me-1"></i> Find Pharmacies
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-lg-6">
+        <div class="card shadow">
+            <div class="card-header bg-info text-white">
+                <h4 class="mb-0"><i class="fas fa-info-circle me-2"></i>About Pharmacy Finder</h4>
+            </div>
+            <div class="card-body">
+                <p>
+                    The Pharmacy Finder helps you locate nearby pharmacies based on your location.
+                    This feature is especially useful when:
+                </p>
+                <ul>
+                    <li>You need to refill a prescription urgently</li>
+                    <li>You're in an unfamiliar area and need medication</li>
+                    <li>You want to find pharmacies with extended hours</li>
+                    <li>You're looking for the closest pharmacy to your location</li>
+                </ul>
+                <div class="alert alert-warning">
+                    <p class="mb-0">
+                        <i class="fas fa-exclamation-triangle me-1"></i>
+                        For the most accurate results, please enter a specific address or postal code.
+                    </p>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

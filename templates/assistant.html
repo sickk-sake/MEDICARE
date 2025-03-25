@@ -1,0 +1,381 @@
+{% extends 'base.html' %}
+
+{% block title %}AI Assistant - Medicine Reminder App{% endblock %}
+
+{% block content %}
+<div class="row mb-4">
+    <div class="col">
+        <h2>AI Assistant</h2>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-lg-4 mb-4">
+        <div class="card shadow h-100">
+            <div class="card-header bg-primary text-white">
+                <h4 class="mb-0"><i class="fas fa-robot me-2"></i>AI Features</h4>
+            </div>
+            <div class="card-body">
+                <div class="nav flex-column nav-pills" id="ai-tab" role="tablist">
+                    <button class="nav-link active mb-2" id="medicine-analysis-tab" data-bs-toggle="pill" data-bs-target="#medicine-analysis" type="button" role="tab">
+                        <i class="fas fa-pills me-2"></i>Medicine Analysis
+                    </button>
+                    <button class="nav-link mb-2" id="food-interactions-tab" data-bs-toggle="pill" data-bs-target="#food-interactions" type="button" role="tab">
+                        <i class="fas fa-utensils me-2"></i>Food Interactions
+                    </button>
+                    <button class="nav-link mb-2" id="alternatives-tab" data-bs-toggle="pill" data-bs-target="#alternatives" type="button" role="tab">
+                        <i class="fas fa-exchange-alt me-2"></i>Alternative Medicines
+                    </button>
+                    <button class="nav-link" id="identify-tab" data-bs-toggle="pill" data-bs-target="#identify" type="button" role="tab">
+                        <i class="fas fa-image me-2"></i>Image Recognition
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-lg-8">
+        <div class="card shadow h-100">
+            <div class="tab-content" id="ai-tabContent">
+                <!-- Medicine Analysis -->
+                <div class="tab-pane fade show active" id="medicine-analysis" role="tabpanel">
+                    <div class="card-header bg-info text-white">
+                        <h4 class="mb-0"><i class="fas fa-pills me-2"></i>Medicine Analysis</h4>
+                    </div>
+                    <div class="card-body">
+                        <p class="mb-3">Select a medicine to get AI-powered analysis about its usage, effects, and precautions.</p>
+                        <form id="analysis-form" class="mb-3">
+                            <div class="mb-3">
+                                <label for="medicine-select" class="form-label">Select Medicine</label>
+                                <select class="form-select" id="medicine-select" name="medicine_id" required>
+                                    <option value="" selected disabled>Choose a medicine...</option>
+                                    {% for medicine in medicines %}
+                                        <option value="{{ medicine.id }}">{{ medicine.name }}</option>
+                                    {% endfor %}
+                                </select>
+                            </div>
+                            <button type="submit" class="btn btn-primary" id="analyze-btn">
+                                <i class="fas fa-search me-1"></i> Analyze Medicine
+                            </button>
+                        </form>
+                        <div id="analysis-result" class="result-container"></div>
+                    </div>
+                </div>
+                
+                <!-- Food Interactions -->
+                <div class="tab-pane fade" id="food-interactions" role="tabpanel">
+                    <div class="card-header bg-warning text-dark">
+                        <h4 class="mb-0"><i class="fas fa-utensils me-2"></i>Food Interactions</h4>
+                    </div>
+                    <div class="card-body">
+                        <p class="mb-3">Find potential food interactions for a medicine.</p>
+                        <form id="interactions-form" class="mb-3">
+                            <div class="mb-3">
+                                <label for="interactions-medicine-select" class="form-label">Select Medicine</label>
+                                <select class="form-select" id="interactions-medicine-select" name="medicine_id" required>
+                                    <option value="" selected disabled>Choose a medicine...</option>
+                                    {% for medicine in medicines %}
+                                        <option value="{{ medicine.id }}">{{ medicine.name }}</option>
+                                    {% endfor %}
+                                </select>
+                            </div>
+                            <button type="submit" class="btn btn-warning" id="interactions-btn">
+                                <i class="fas fa-search me-1"></i> Find Food Interactions
+                            </button>
+                        </form>
+                        <div id="interactions-result" class="result-container"></div>
+                    </div>
+                </div>
+                
+                <!-- Alternative Medicines -->
+                <div class="tab-pane fade" id="alternatives" role="tabpanel">
+                    <div class="card-header bg-success text-white">
+                        <h4 class="mb-0"><i class="fas fa-exchange-alt me-2"></i>Alternative Medicines</h4>
+                    </div>
+                    <div class="card-body">
+                        <p class="mb-3">Find alternative medicines for a specific medication.</p>
+                        <form id="alternatives-form" class="mb-3">
+                            <div class="mb-3">
+                                <label for="alternatives-medicine-select" class="form-label">Select Medicine</label>
+                                <select class="form-select" id="alternatives-medicine-select" name="medicine_id" required>
+                                    <option value="" selected disabled>Choose a medicine...</option>
+                                    {% for medicine in medicines %}
+                                        <option value="{{ medicine.id }}">{{ medicine.name }}</option>
+                                    {% endfor %}
+                                </select>
+                            </div>
+                            <div class="mb-3">
+                                <label for="reason" class="form-label">Reason for Alternative (Optional)</label>
+                                <input type="text" class="form-control" id="reason" name="reason" placeholder="e.g., side effects, cost, availability">
+                            </div>
+                            <button type="submit" class="btn btn-success" id="alternatives-btn">
+                                <i class="fas fa-search me-1"></i> Find Alternatives
+                            </button>
+                        </form>
+                        <div id="alternatives-result" class="result-container"></div>
+                    </div>
+                </div>
+                
+                <!-- Image Recognition -->
+                <div class="tab-pane fade" id="identify" role="tabpanel">
+                    <div class="card-header bg-secondary text-white">
+                        <h4 class="mb-0"><i class="fas fa-image me-2"></i>Medicine Image Recognition</h4>
+                    </div>
+                    <div class="card-body">
+                        <p class="mb-3">Upload an image of a medicine to identify it.</p>
+                        <form id="identify-form" class="mb-3">
+                            <div class="mb-3">
+                                <label for="medicine-image" class="form-label">Upload Medicine Image</label>
+                                <input class="form-control" type="file" id="medicine-image" name="image" accept="image/*" required>
+                            </div>
+                            <div class="mb-3">
+                                <div id="image-preview" style="max-width: 100%; max-height: 200px; overflow: hidden; display: none;">
+                                    <img id="preview-medicine-image" style="max-width: 100%; max-height: 200px;">
+                                </div>
+                            </div>
+                            <button type="submit" class="btn btn-secondary" id="identify-btn">
+                                <i class="fas fa-search me-1"></i> Identify Medicine
+                            </button>
+                        </form>
+                        <div id="identify-result" class="result-container"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        // Medicine Analysis
+        document.getElementById('analysis-form').addEventListener('submit', function(e) {
+            e.preventDefault();
+            
+            const medicineId = document.getElementById('medicine-select').value;
+            const resultContainer = document.getElementById('analysis-result');
+            
+            if (!medicineId) {
+                resultContainer.innerHTML = '<div class="alert alert-danger">Please select a medicine</div>';
+                return;
+            }
+            
+            resultContainer.innerHTML = '<div class="d-flex justify-content-center"><div class="spinner-border text-primary" role="status"></div></div>';
+            
+            fetch('/assistant/analyze', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                },
+                body: `medicine_id=${medicineId}`
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    let html = '<div class="card bg-light">';
+                    html += '<div class="card-header bg-primary text-white">Analysis Results</div>';
+                    html += '<div class="card-body">';
+                    
+                    if (typeof data.analysis === 'object') {
+                        // If the result is an object with multiple sections
+                        Object.keys(data.analysis).forEach(key => {
+                            html += `<h5>${key.replace('_', ' ').charAt(0).toUpperCase() + key.replace('_', ' ').slice(1)}</h5>`;
+                            html += `<p>${data.analysis[key]}</p>`;
+                        });
+                    } else {
+                        // If the result is a simple string
+                        html += `<p>${data.analysis}</p>`;
+                    }
+                    
+                    html += '</div></div>';
+                    resultContainer.innerHTML = html;
+                } else {
+                    resultContainer.innerHTML = `<div class="alert alert-danger">${data.error}</div>`;
+                }
+            })
+            .catch(error => {
+                resultContainer.innerHTML = `<div class="alert alert-danger">Error: ${error.message}</div>`;
+            });
+        });
+        
+        // Food Interactions
+        document.getElementById('interactions-form').addEventListener('submit', function(e) {
+            e.preventDefault();
+            
+            const medicineId = document.getElementById('interactions-medicine-select').value;
+            const resultContainer = document.getElementById('interactions-result');
+            
+            if (!medicineId) {
+                resultContainer.innerHTML = '<div class="alert alert-danger">Please select a medicine</div>';
+                return;
+            }
+            
+            resultContainer.innerHTML = '<div class="d-flex justify-content-center"><div class="spinner-border text-warning" role="status"></div></div>';
+            
+            fetch('/assistant/food-interactions', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                },
+                body: `medicine_id=${medicineId}`
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    let html = '<div class="card bg-light">';
+                    html += '<div class="card-header bg-warning text-dark">Food Interactions</div>';
+                    html += '<div class="card-body">';
+                    
+                    if (Array.isArray(data.interactions)) {
+                        html += '<ul class="list-group">';
+                        data.interactions.forEach(interaction => {
+                            html += `<li class="list-group-item">${interaction}</li>`;
+                        });
+                        html += '</ul>';
+                    } else {
+                        html += `<p>${data.interactions}</p>`;
+                    }
+                    
+                    html += '</div></div>';
+                    resultContainer.innerHTML = html;
+                } else {
+                    resultContainer.innerHTML = `<div class="alert alert-danger">${data.error}</div>`;
+                }
+            })
+            .catch(error => {
+                resultContainer.innerHTML = `<div class="alert alert-danger">Error: ${error.message}</div>`;
+            });
+        });
+        
+        // Alternative Medicines
+        document.getElementById('alternatives-form').addEventListener('submit', function(e) {
+            e.preventDefault();
+            
+            const medicineId = document.getElementById('alternatives-medicine-select').value;
+            const reason = document.getElementById('reason').value;
+            const resultContainer = document.getElementById('alternatives-result');
+            
+            if (!medicineId) {
+                resultContainer.innerHTML = '<div class="alert alert-danger">Please select a medicine</div>';
+                return;
+            }
+            
+            resultContainer.innerHTML = '<div class="d-flex justify-content-center"><div class="spinner-border text-success" role="status"></div></div>';
+            
+            fetch('/assistant/alternatives', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                },
+                body: `medicine_id=${medicineId}&reason=${reason}`
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    let html = '<div class="card bg-light">';
+                    html += '<div class="card-header bg-success text-white">Alternative Medicines</div>';
+                    html += '<div class="card-body">';
+                    
+                    if (Array.isArray(data.alternatives)) {
+                        html += '<ul class="list-group">';
+                        data.alternatives.forEach(alternative => {
+                            if (typeof alternative === 'object') {
+                                html += `<li class="list-group-item">
+                                    <h5>${alternative.name}</h5>
+                                    <p>${alternative.description}</p>
+                                </li>`;
+                            } else {
+                                html += `<li class="list-group-item">${alternative}</li>`;
+                            }
+                        });
+                        html += '</ul>';
+                    } else {
+                        html += `<p>${data.alternatives}</p>`;
+                    }
+                    
+                    html += '</div></div>';
+                    resultContainer.innerHTML = html;
+                } else {
+                    resultContainer.innerHTML = `<div class="alert alert-danger">${data.error}</div>`;
+                }
+            })
+            .catch(error => {
+                resultContainer.innerHTML = `<div class="alert alert-danger">Error: ${error.message}</div>`;
+            });
+        });
+        
+        // Image Recognition
+        // Preview the image when selected
+        document.getElementById('medicine-image').addEventListener('change', function() {
+            const preview = document.getElementById('preview-medicine-image');
+            const previewContainer = document.getElementById('image-preview');
+            
+            if (this.files && this.files[0]) {
+                const reader = new FileReader();
+                
+                reader.onload = function(e) {
+                    preview.src = e.target.result;
+                    previewContainer.style.display = 'block';
+                }
+                
+                reader.readAsDataURL(this.files[0]);
+            }
+        });
+        
+        document.getElementById('identify-form').addEventListener('submit', function(e) {
+            e.preventDefault();
+            
+            const imageInput = document.getElementById('medicine-image');
+            const resultContainer = document.getElementById('identify-result');
+            
+            if (!imageInput.files || !imageInput.files[0]) {
+                resultContainer.innerHTML = '<div class="alert alert-danger">Please select an image</div>';
+                return;
+            }
+            
+            resultContainer.innerHTML = '<div class="d-flex justify-content-center"><div class="spinner-border text-secondary" role="status"></div></div>';
+            
+            const formData = new FormData();
+            formData.append('image', imageInput.files[0]);
+            
+            fetch('/assistant/identify', {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    let html = '<div class="card bg-light">';
+                    html += '<div class="card-header bg-secondary text-white">Medicine Identification</div>';
+                    html += '<div class="card-body">';
+                    
+                    if (typeof data.identification === 'object') {
+                        if (data.identification.name) {
+                            html += `<h5>Identified Medicine: ${data.identification.name}</h5>`;
+                        }
+                        
+                        Object.keys(data.identification).forEach(key => {
+                            if (key !== 'name') {
+                                const title = key.replace('_', ' ').charAt(0).toUpperCase() + key.replace('_', ' ').slice(1);
+                                html += `<h6>${title}</h6>`;
+                                html += `<p>${data.identification[key]}</p>`;
+                            }
+                        });
+                    } else {
+                        html += `<p>${data.identification}</p>`;
+                    }
+                    
+                    html += '</div></div>';
+                    resultContainer.innerHTML = html;
+                } else {
+                    resultContainer.innerHTML = `<div class="alert alert-danger">${data.error}</div>`;
+                }
+            })
+            .catch(error => {
+                resultContainer.innerHTML = `<div class="alert alert-danger">Error: ${error.message}</div>`;
+            });
+        });
+    });
+</script>
+{% endblock %}

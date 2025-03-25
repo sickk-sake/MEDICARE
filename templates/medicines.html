@@ -1,0 +1,97 @@
+{% extends 'base.html' %}
+
+{% block title %}Medicines - Medicine Reminder App{% endblock %}
+
+{% block content %}
+<div class="row mb-4">
+    <div class="col">
+        <h2>Manage Medicines</h2>
+        <a href="{{ url_for('add_medicine') }}" class="btn btn-primary mb-3">
+            <i class="fas fa-plus me-1"></i> Add New Medicine
+        </a>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-lg-12">
+        <div class="card shadow">
+            <div class="card-header bg-primary text-white">
+                <h4 class="mb-0"><i class="fas fa-list me-2"></i>Medicine List</h4>
+            </div>
+            <div class="card-body">
+                {% if medicines %}
+                    <div class="table-responsive">
+                        <table class="table table-hover">
+                            <thead>
+                                <tr>
+                                    <th>Name</th>
+                                    <th>Dosage</th>
+                                    <th>Schedule</th>
+                                    <th>Expiry Date</th>
+                                    <th>Doses Left</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for medicine in medicines %}
+                                    <tr>
+                                        <td>{{ medicine.name }}</td>
+                                        <td>{{ medicine.dosage if medicine.dosage else 'Not specified' }}</td>
+                                        <td>
+                                            {% for schedule in medicine.schedules %}
+                                                <span class="badge bg-info me-1">
+                                                    {{ schedule.time }}
+                                                    {% if schedule.day_of_week >= 0 %}
+                                                        ({{ ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'][schedule.day_of_week] }})
+                                                    {% endif %}
+                                                </span>
+                                            {% else %}
+                                                No schedule
+                                            {% endfor %}
+                                        </td>
+                                        <td>{{ medicine.expiry_date if medicine.expiry_date else 'Not specified' }}</td>
+                                        <td>{{ medicine.doses_remaining if medicine.doses_remaining is not none else 'Not tracked' }}</td>
+                                        <td>
+                                            <a href="{{ url_for('edit_medicine', medicine_id=medicine.id) }}" class="btn btn-sm btn-warning me-1">
+                                                <i class="fas fa-edit"></i>
+                                            </a>
+                                            <button type="button" class="btn btn-sm btn-danger" data-bs-toggle="modal" data-bs-target="#deleteModal{{ medicine.id }}">
+                                                <i class="fas fa-trash"></i>
+                                            </button>
+                                            
+                                            <!-- Delete Modal -->
+                                            <div class="modal fade" id="deleteModal{{ medicine.id }}" tabindex="-1" aria-hidden="true">
+                                                <div class="modal-dialog">
+                                                    <div class="modal-content">
+                                                        <div class="modal-header">
+                                                            <h5 class="modal-title">Confirm Deletion</h5>
+                                                            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                                                        </div>
+                                                        <div class="modal-body">
+                                                            Are you sure you want to delete <strong>{{ medicine.name }}</strong>?
+                                                        </div>
+                                                        <div class="modal-footer">
+                                                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                                                            <form action="{{ url_for('delete_medicine', medicine_id=medicine.id) }}" method="post">
+                                                                <button type="submit" class="btn btn-danger">Delete</button>
+                                                            </form>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                {% else %}
+                    <div class="alert alert-info">
+                        <p class="mb-0">No medicines added yet. Click the "Add New Medicine" button to get started.</p>
+                    </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
