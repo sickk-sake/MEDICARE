@@ -1,0 +1,83 @@
+{% extends 'base.html' %}
+
+{% block title %}Pharmacy Results - Medicine Reminder App{% endblock %}
+
+{% block content %}
+<div class="row mb-4">
+    <div class="col">
+        <h2>Pharmacy Search Results</h2>
+        <a href="{{ url_for('pharmacy') }}" class="btn btn-secondary">
+            <i class="fas fa-arrow-left me-1"></i> New Search
+        </a>
+    </div>
+</div>
+
+<div class="row mb-3">
+    <div class="col">
+        <div class="alert alert-info">
+            <h5 class="alert-heading">Search Parameters</h5>
+            <p class="mb-0">
+                <strong>Location:</strong> {{ location }}<br>
+                <strong>Radius:</strong> {{ radius // 1000 }} km
+            </p>
+        </div>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-lg-12">
+        <div class="card shadow">
+            <div class="card-header bg-primary text-white">
+                <h4 class="mb-0">
+                    <i class="fas fa-store-alt me-2"></i>
+                    Found {{ pharmacies|length }} Pharmacies
+                </h4>
+            </div>
+            <div class="card-body">
+                {% if pharmacies %}
+                    <div class="row">
+                        {% for pharmacy in pharmacies %}
+                            <div class="col-md-6 mb-4">
+                                <div class="card pharmacy-card h-100">
+                                    <div class="card-body">
+                                        <h5 class="card-title">{{ pharmacy.name }}</h5>
+                                        <p class="card-text">
+                                            <i class="fas fa-map-marker-alt text-danger me-1"></i>
+                                            {{ pharmacy.address }}
+                                        </p>
+                                        <p class="card-text">
+                                            <i class="fas fa-walking text-info me-1"></i>
+                                            <strong>Distance:</strong> {{ "%.2f"|format(pharmacy.distance) }} km
+                                        </p>
+                                        {% if pharmacy.phone %}
+                                            <p class="card-text">
+                                                <i class="fas fa-phone text-success me-1"></i>
+                                                <strong>Phone:</strong> {{ pharmacy.phone }}
+                                            </p>
+                                        {% endif %}
+                                        {% if pharmacy.opening_hours %}
+                                            <p class="card-text">
+                                                <i class="fas fa-clock text-warning me-1"></i>
+                                                <strong>Hours:</strong> {{ pharmacy.opening_hours }}
+                                            </p>
+                                        {% endif %}
+                                    </div>
+                                    <div class="card-footer">
+                                        <a href="https://www.openstreetmap.org/?mlat={{ pharmacy.lat }}&mlon={{ pharmacy.lon }}&zoom=16" target="_blank" class="btn btn-outline-primary w-100">
+                                            <i class="fas fa-map me-1"></i> Open in Map
+                                        </a>
+                                    </div>
+                                </div>
+                            </div>
+                        {% endfor %}
+                    </div>
+                {% else %}
+                    <div class="alert alert-warning">
+                        <p class="mb-0">No pharmacies found within the specified radius. Try increasing the search radius or using a different location.</p>
+                    </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

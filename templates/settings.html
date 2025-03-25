@@ -1,0 +1,200 @@
+{% extends 'base.html' %}
+
+{% block title %}Settings - Medicine Reminder App{% endblock %}
+
+{% block content %}
+<div class="row mb-4">
+    <div class="col">
+        <h2>Application Settings</h2>
+    </div>
+</div>
+
+<div class="row mb-4">
+    <div class="col-lg-12">
+        <div class="card shadow">
+            <div class="card-header bg-primary text-white">
+                <h4 class="mb-0"><i class="fas fa-envelope me-2"></i>Email Notifications</h4>
+            </div>
+            <div class="card-body">
+                <form action="{{ url_for('settings_email') }}" method="post">
+                    <div class="row mb-3">
+                        <div class="col-md-6">
+                            <label for="email_sender" class="form-label">Sender Email</label>
+                            <input type="email" class="form-control" id="email_sender" name="email_sender" value="{{ email_settings.sender }}" placeholder="Your email address">
+                        </div>
+                        <div class="col-md-6">
+                            <label for="email_password" class="form-label">Password or App Password</label>
+                            <input type="password" class="form-control" id="email_password" name="email_password" placeholder="Your email password or app password">
+                            <div class="form-text">For Gmail, you need to use an App Password.</div>
+                        </div>
+                    </div>
+                    <div class="mb-3">
+                        <label for="email_recipient" class="form-label">Recipient Email</label>
+                        <input type="email" class="form-control" id="email_recipient" name="email_recipient" value="{{ email_settings.recipient }}" placeholder="Email to receive notifications">
+                    </div>
+                    <button type="submit" class="btn btn-primary">Save Email Settings</button>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row mb-4">
+    <div class="col-lg-12">
+        <div class="card shadow">
+            <div class="card-header bg-info text-white">
+                <h4 class="mb-0"><i class="fab fa-telegram me-2"></i>Telegram Notifications</h4>
+            </div>
+            <div class="card-body">
+                {% if telegram_settings.is_configured %}
+                    <div class="alert alert-success mb-3">
+                        <p class="mb-0">Telegram bot is configured and running.</p>
+                    </div>
+                    
+                    <form action="{{ url_for('settings_telegram') }}" method="post">
+                        <div class="mb-3">
+                            <label for="telegram_chat_id" class="form-label">Add Chat ID</label>
+                            <input type="text" class="form-control" id="telegram_chat_id" name="telegram_chat_id" placeholder="Enter Telegram chat ID">
+                            <div class="form-text">
+                                To get your chat ID, start a conversation with your bot and send the command /start.
+                            </div>
+                        </div>
+                        <button type="submit" class="btn btn-primary">Add Chat ID</button>
+                    </form>
+                    
+                    {% if telegram_settings.chats %}
+                        <h5 class="mt-4">Registered Chat IDs</h5>
+                        <div class="list-group mt-3">
+                            {% for chat_id in telegram_settings.chats %}
+                                <div class="list-group-item d-flex justify-content-between align-items-center">
+                                    {{ chat_id }}
+                                    <form action="{{ url_for('remove_telegram_chat', chat_id=chat_id) }}" method="post" class="d-inline">
+                                        <button type="submit" class="btn btn-sm btn-danger">
+                                            <i class="fas fa-times"></i>
+                                        </button>
+                                    </form>
+                                </div>
+                            {% endfor %}
+                        </div>
+                    {% endif %}
+                {% else %}
+                    <div class="alert alert-warning">
+                        <p class="mb-0">
+                            Telegram bot is not configured. Please set the TELEGRAM_BOT_TOKEN environment variable.
+                        </p>
+                    </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row mb-4">
+    <div class="col-lg-12">
+        <div class="card shadow">
+            <div class="card-header bg-success text-white">
+                <h4 class="mb-0"><i class="fab fa-google me-2"></i>Google Services</h4>
+            </div>
+            <div class="card-body">
+                <form action="{{ url_for('settings_google') }}" method="post">
+                    <div class="row mb-4">
+                        <div class="col-md-4">
+                            <div class="card h-100">
+                                <div class="card-body">
+                                    <h5 class="card-title">
+                                        <i class="fas fa-cloud me-2"></i>Google Drive
+                                    </h5>
+                                    <p class="card-text">Sync your medicine database with Google Drive.</p>
+                                    <div class="form-check form-switch mb-3">
+                                        <input class="form-check-input" type="checkbox" id="drive_sync" name="drive_sync" {% if google_settings.drive_sync %}checked{% endif %}>
+                                        <label class="form-check-label" for="drive_sync">Enable Drive Sync</label>
+                                    </div>
+                                    <div class="d-grid">
+                                        {% if google_settings.drive_authenticated %}
+                                            <span class="badge bg-success mb-2">Authenticated</span>
+                                        {% else %}
+                                            <a href="{{ url_for('authenticate_drive') }}" class="btn btn-outline-success btn-sm">
+                                                Authenticate
+                                            </a>
+                                        {% endif %}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="col-md-4">
+                            <div class="card h-100">
+                                <div class="card-body">
+                                    <h5 class="card-title">
+                                        <i class="fas fa-calendar-alt me-2"></i>Google Calendar
+                                    </h5>
+                                    <p class="card-text">Sync medicine schedules with Google Calendar.</p>
+                                    <div class="form-check form-switch mb-3">
+                                        <input class="form-check-input" type="checkbox" id="calendar_sync" name="calendar_sync" {% if google_settings.calendar_sync %}checked{% endif %}>
+                                        <label class="form-check-label" for="calendar_sync">Enable Calendar Sync</label>
+                                    </div>
+                                    <div class="d-grid">
+                                        {% if google_settings.calendar_authenticated %}
+                                            <span class="badge bg-success mb-2">Authenticated</span>
+                                        {% else %}
+                                            <a href="{{ url_for('authenticate_calendar') }}" class="btn btn-outline-success btn-sm">
+                                                Authenticate
+                                            </a>
+                                        {% endif %}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="col-md-4">
+                            <div class="card h-100">
+                                <div class="card-body">
+                                    <h5 class="card-title">
+                                        <i class="fas fa-table me-2"></i>Google Sheets
+                                    </h5>
+                                    <p class="card-text">Export medicine data to Google Sheets.</p>
+                                    <div class="form-check form-switch mb-3">
+                                        <input class="form-check-input" type="checkbox" id="sheets_sync" name="sheets_sync" {% if google_settings.sheets_sync %}checked{% endif %}>
+                                        <label class="form-check-label" for="sheets_sync">Enable Sheets Sync</label>
+                                    </div>
+                                    <div class="d-grid">
+                                        {% if google_settings.sheets_authenticated %}
+                                            <span class="badge bg-success mb-2">Authenticated</span>
+                                        {% else %}
+                                            <a href="{{ url_for('authenticate_sheets') }}" class="btn btn-outline-success btn-sm">
+                                                Authenticate
+                                            </a>
+                                        {% endif %}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <button type="submit" class="btn btn-success">Save Google Settings</button>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row mb-4">
+    <div class="col-lg-12">
+        <div class="card shadow border-danger">
+            <div class="card-header bg-danger text-white">
+                <h4 class="mb-0"><i class="fas fa-power-off me-2"></i>Application Control</h4>
+            </div>
+            <div class="card-body">
+                <div class="alert alert-warning">
+                    <p class="mb-0">
+                        <i class="fas fa-exclamation-triangle me-1"></i>
+                        Shutting down the application will stop all background tasks including notifications.
+                    </p>
+                </div>
+                <a href="{{ url_for('shutdown') }}" class="btn btn-danger" onclick="return confirm('Are you sure you want to shut down the application?')">
+                    <i class="fas fa-power-off me-1"></i> Shutdown Application
+                </a>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
