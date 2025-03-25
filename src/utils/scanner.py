@@ -1,155 +1,172 @@
 import cv2
-import numpy as np
 from pyzbar.pyzbar import decode
 import logging
-import time
-
-logger = logging.getLogger(__name__)
 
 class BarcodeScanner:
-    """Barcode scanning functionality using OpenCV and pyzbar"""
-    
+    """
+    A class to handle barcode scanning functionality using OpenCV and Pyzbar.
+    """
     def __init__(self):
-        """Initialize the barcode scanner"""
-        self.last_scan_time = 0
-        self.last_barcode = None
-        
-        logger.debug("Barcode scanner initialized")
-    
-    def scan_image(self, image):
+        """Initialize the BarcodeScanner."""
+        self.cap = None
+        self.logger = logging.getLogger(__name__)
+
+    def start_camera(self, camera_index=0):
         """
-        Scan an image for barcodes
+        Start the camera for barcode scanning.
         
         Args:
-            image: numpy array image (BGR or RGB format)
+            camera_index (int): Index of the camera to use (default: 0)
             
         Returns:
-            List of detected barcode values
+            bool: True if camera started successfully, False otherwise
         """
         try:
-            # Perform barcode detection
-            barcodes = decode(image)
+            self.cap = cv2.VideoCapture(camera_index)
+            if not self.cap.isOpened():
+                self.logger.error("Failed to open camera")
+                return False
+            return True
+        except Exception as e:
+            self.logger.error(f"Error starting camera: {str(e)}")
+            return False
+
+    def stop_camera(self):
+        """
+        Stop the camera.
+        """
+        if self.cap and self.cap.isOpened():
+            self.cap.release()
+            self.cap = None
+
+    def scan_frame(self, frame):
+        """
+        Scan a single frame for barcodes.
+        
+        Args:
+            frame: OpenCV image frame to scan
             
-            # Extract barcode values
-            result = []
-            for barcode in barcodes:
-                # Convert barcode data to string
-                barcode_data = barcode.data.decode('utf-8')
-                barcode_type = barcode.type
+        Returns:
+            list: Decoded barcode data (empty list if none found)
+        """
+        try:
+            decoded_objects = decode(frame)
+            results = []
+            
+            for obj in decoded_objects:
+                barcode_data = obj.data.decode('utf-8')
+                barcode_type = obj.type
+                results.append({
+                    'data': barcode_data,
+                    'type': barcode_type,
+                })
                 
-                logger.debug(f"Detected {barcode_type} barcode: {barcode_data}")
-                
-                # Draw rectangle around barcode (for visualization)
-                points = barcode.polygon
+                # Draw a rectangle around the barcode
+                points = obj.polygon
                 if len(points) > 4:
                     hull = cv2.convexHull(np.array([point for point in points], dtype=np.float32))
-                    hull = cv2.approxPolyDP(hull, 0.02 * cv2.arcLength(hull, True), True)
-                    points = hull
+                    cv2.polylines(frame, [hull], True, (0, 255, 0), 2)
+                else:
+                    pts = np.array([point for point in points], dtype=np.int32)
+                    cv2.polylines(frame, [pts], True, (0, 255, 0), 2)
                 
-                # Add to results
-                result.append(barcode_data)
-            
-            return result
-            
+                # Put the barcode data on the image
+                cv2.putText(frame, barcode_data, (obj.rect.left, obj.rect.top - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                
+            return results, frame
         except Exception as e:
-            logger.error(f"Error scanning barcode: {e}")
-            return []
-    
-    def start_camera_scanning(self, camera_id=0):
+            self.logger.error(f"Error scanning frame: {str(e)}")
+            return [], frame
+
+    def scan_barcode(self):
         """
-        Start continuous barcode scanning from camera
+        Continuously scan for barcodes until one is found or cancelled.
         
-        Args:
-            camera_id: Camera device ID (default: 0)
-            
         Returns:
-            OpenCV VideoCapture object
+            dict: Barcode information or None if cancelled/error
         """
+        if not self.cap or not self.cap.isOpened():
+            if not self.start_camera():
+                return None
+                
         try:
-            # Initialize the camera
-            cap = cv2.VideoCapture(camera_id)
-            
-            if not cap.isOpened():
-                raise Exception(f"Could not open camera {camera_id}")
-            
-            logger.debug(f"Camera {camera_id} initialized successfully")
-            return cap
-            
-        except Exception as e:
-            logger.error(f"Error initializing camera: {e}")
+            while True:
+                ret, frame = self.cap.read()
+                if not ret:
+                    self.logger.error("Failed to capture frame")
+                    break
+                    
+                # Mirror the frame for more intuitive user experience
+                frame = cv2.flip(frame, 1)
+                
+                results, processed_frame = self.scan_frame(frame)
+                
+                cv2.imshow('Barcode Scanner', processed_frame)
+                
+                # If a barcode is found, return the first one
+                if results:
+                    cv2.destroyAllWindows()
+                    self.stop_camera()
+                    return results[0]
+                    
+                # Break loop with 'q'
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    break
+                    
+            cv2.destroyAllWindows()
+            self.stop_camera()
             return None
-    
-    def process_camera_frame(self, frame):
-        """
-        Process a single camera frame for barcode detection
-        
-        Args:
-            frame: numpy array image from camera
-            
-        Returns:
-            Tuple of (processed_frame, detected_barcodes)
-        """
-        try:
-            # Process at most once every 0.5 seconds to avoid unnecessary CPU usage
-            current_time = time.time()
-            if current_time - self.last_scan_time < 0.5:
-                return frame, []
-            
-            self.last_scan_time = current_time
-            
-            # Convert to grayscale for better barcode detection
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            
-            # Apply some blur to reduce noise
-            blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-            
-            # Detect barcodes
-            barcodes = decode(blurred)
-            
-            # Draw bounding boxes and barcode values
-            for barcode in barcodes:
-                # Extract barcode info
-                barcode_data = barcode.data.decode('utf-8')
-                barcode_type = barcode.type
-                
-                # Get bounding box coordinates
-                (x, y, w, h) = barcode.rect
-                
-                # Draw rectangle and text
-                cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
-                text = f"{barcode_type}: {barcode_data}"
-                cv2.putText(frame, text, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX,
-                            0.5, (0, 255, 0), 2)
-            
-            # Extract barcode values
-            barcode_values = [b.data.decode('utf-8') for b in barcodes]
-            
-            return frame, barcode_values
             
         except Exception as e:
-            logger.error(f"Error processing camera frame: {e}")
-            return frame, []
-    
-    def scan_from_image_file(self, image_path):
+            self.logger.error(f"Error in barcode scanning: {str(e)}")
+            if self.cap and self.cap.isOpened():
+                self.stop_camera()
+            cv2.destroyAllWindows()
+            return None
+
+    def scan_from_image(self, image_path):
         """
-        Scan barcodes from an image file
+        Scan a barcode from an image file.
         
         Args:
-            image_path: Path to image file
+            image_path (str): Path to the image file
             
         Returns:
-            List of detected barcode values
+            dict: Barcode information or None if not found/error
         """
         try:
-            # Read image
+            # Read the image
             image = cv2.imread(image_path)
-            
             if image is None:
-                raise Exception(f"Could not read image from {image_path}")
+                self.logger.error(f"Failed to load image: {image_path}")
+                return None
+                
+            # Decode barcodes
+            decoded_objects = decode(image)
             
-            # Scan for barcodes
-            return self.scan_image(image)
+            if not decoded_objects:
+                return None
+                
+            # Return the first barcode found
+            barcode = decoded_objects[0]
+            return {
+                'data': barcode.data.decode('utf-8'),
+                'type': barcode.type
+            }
             
         except Exception as e:
-            logger.error(f"Error scanning from image file: {e}")
-            return []
+            self.logger.error(f"Error scanning image: {str(e)}")
+            return None
+
+
+if __name__ == "__main__":
+    # Simple test of the barcode scanner
+    import numpy as np
+    logging.basicConfig(level=logging.INFO)
+    scanner = BarcodeScanner()
+    result = scanner.scan_barcode()
+    if result:
+        print(f"Barcode detected: {result['data']} ({result['type']})")
+    else:
+        print("No barcode detected or scanning was cancelled.")

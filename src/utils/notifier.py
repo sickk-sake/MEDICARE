@@ -1,299 +1,247 @@
 import os
-import smtplib
 import logging
+import datetime
+import schedule
+import time
+import threading
+import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-import platform
-import time
-from datetime import datetime
-import threading
+from plyer import notification
 
-logger = logging.getLogger(__name__)
-
-class Notifier:
-    """Notification system for medicine reminders"""
+class MedicineNotifier:
+    """
+    A class to handle medication reminders via different notification channels:
+    - System notifications
+    - Email
     
-    def __init__(self):
-        """Initialize the notification system"""
-        self.os_name = platform.system()  # Windows, Darwin (macOS), or Linux
-        logger.debug(f"Notifier initialized on {self.os_name}")
-        
-        # Initialize email settings from environment variables
-        self.email_sender = os.getenv("EMAIL_SENDER", "")
-        self.email_password = os.getenv("EMAIL_PASSWORD", "")
-        self.email_server = os.getenv("EMAIL_SERVER", "smtp.gmail.com")
-        self.email_port = int(os.getenv("EMAIL_PORT", "587"))
-        
-        # Keep track of active notifications
-        self.active_notifications = {}
-        
-        # Start notification cleanup thread
-        self.cleanup_thread = threading.Thread(target=self._cleanup_notifications, daemon=True)
-        self.cleanup_thread.start()
+    Telegram notifications are handled in telegram_bot.py
+    """
     
-    def send_system_notification(self, title, message, sound=True):
+    def __init__(self, db_manager):
         """
-        Send a system notification
+        Initialize the notifier with a database manager.
         
         Args:
-            title: Notification title
-            message: Notification message
-            sound: Whether to play a sound (default: True)
+            db_manager: Database manager instance to access medicine data
+        """
+        self.db_manager = db_manager
+        self.logger = logging.getLogger(__name__)
+        self.notification_thread = None
+        self.stop_flag = threading.Event()
+        
+        # Email configuration
+        self.email_enabled = False
+        self.email_sender = ""
+        self.email_password = ""
+        self.email_recipient = ""
+        self.smtp_server = "smtp.gmail.com"
+        self.smtp_port = 587
+        
+    def configure_email(self, sender, password, recipient, server="smtp.gmail.com", port=587):
+        """
+        Configure email notification settings.
+        
+        Args:
+            sender (str): Sender email address
+            password (str): Sender email password or app password
+            recipient (str): Recipient email address
+            server (str): SMTP server address
+            port (int): SMTP server port
+        """
+        self.email_sender = sender
+        self.email_password = password
+        self.email_recipient = recipient
+        self.smtp_server = server
+        self.smtp_port = port
+        self.email_enabled = True
+        self.logger.info("Email notifications configured")
+        
+    def send_system_notification(self, title, message, timeout=10):
+        """
+        Send a system notification.
+        
+        Args:
+            title (str): Notification title
+            message (str): Notification message
+            timeout (int): Notification timeout in seconds
             
         Returns:
-            True if successful, False otherwise
+            bool: True if notification was sent successfully, False otherwise
         """
         try:
-            # Different notification methods based on OS
-            if self.os_name == "Windows":
-                return self._send_windows_notification(title, message, sound)
-            elif self.os_name == "Darwin":  # macOS
-                return self._send_macos_notification(title, message, sound)
-            elif self.os_name == "Linux":
-                return self._send_linux_notification(title, message, sound)
-            else:
-                logger.warning(f"System notifications not supported on {self.os_name}")
-                return False
-                
-        except Exception as e:
-            logger.error(f"Error sending system notification: {e}")
-            return False
-    
-    def _send_windows_notification(self, title, message, sound=True):
-        """Send notification on Windows"""
-        try:
-            # Use Windows toast notifications via plyer
-            from plyer import notification
-            
             notification.notify(
                 title=title,
                 message=message,
                 app_name="Medicine Reminder",
-                timeout=10
+                timeout=timeout
             )
-            
-            # Store notification in active list with expiry time
-            notification_id = f"{time.time()}"
-            self.active_notifications[notification_id] = {
-                "title": title,
-                "message": message,
-                "timestamp": datetime.now(),
-                "expiry": datetime.now().timestamp() + 30  # 30 seconds expiry
-            }
-            
             return True
-            
         except Exception as e:
-            logger.error(f"Error sending Windows notification: {e}")
-            
-            # Fallback to console notification
-            print(f"\n[NOTIFICATION] {title}: {message}\n")
+            self.logger.error(f"Failed to send system notification: {str(e)}")
             return False
-    
-    def _send_macos_notification(self, title, message, sound=True):
-        """Send notification on macOS"""
-        try:
-            # Use applescript via osascript
-            import subprocess
             
-            # Escape double quotes in the message and title
-            message = message.replace('"', '\\"')
-            title = title.replace('"', '\\"')
-            
-            script = f'display notification "{message}" with title "{title}"'
-            if sound:
-                script += ' sound name "Submarine"'  # macOS default sound
-                
-            subprocess.run(["osascript", "-e", script], check=True)
-            
-            # Store notification in active list
-            notification_id = f"{time.time()}"
-            self.active_notifications[notification_id] = {
-                "title": title,
-                "message": message,
-                "timestamp": datetime.now(),
-                "expiry": datetime.now().timestamp() + 30  # 30 seconds expiry
-            }
-            
-            return True
-            
-        except Exception as e:
-            logger.error(f"Error sending macOS notification: {e}")
-            
-            # Fallback to console notification
-            print(f"\n[NOTIFICATION] {title}: {message}\n")
-            return False
-    
-    def _send_linux_notification(self, title, message, sound=True):
-        """Send notification on Linux"""
-        try:
-            # Try using plyer first
-            try:
-                from plyer import notification
-                
-                notification.notify(
-                    title=title,
-                    message=message,
-                    app_name="Medicine Reminder",
-                    timeout=10
-                )
-                
-                return True
-                
-            except ImportError:
-                # Fallback to using notify-send via subprocess
-                import subprocess
-                
-                # Escape characters for shell
-                message = message.replace('"', '\\"')
-                title = title.replace('"', '\\"')
-                
-                cmd = ["notify-send", title, message, "--icon=dialog-information"]
-                if sound:
-                    # Play sound with paplay if available (most desktop environments)
-                    subprocess.Popen("paplay /usr/share/sounds/freedesktop/stereo/message.oga", 
-                                   shell=True, stderr=subprocess.DEVNULL)
-                
-                subprocess.run(cmd, check=True)
-                
-                # Store notification in active list
-                notification_id = f"{time.time()}"
-                self.active_notifications[notification_id] = {
-                    "title": title,
-                    "message": message,
-                    "timestamp": datetime.now(),
-                    "expiry": datetime.now().timestamp() + 30  # 30 seconds expiry
-                }
-                
-                return True
-                
-        except Exception as e:
-            logger.error(f"Error sending Linux notification: {e}")
-            
-            # Fallback to console notification
-            print(f"\n[NOTIFICATION] {title}: {message}\n")
-            return False
-    
-    def send_email_notification(self, recipient, subject, body):
+    def send_email_notification(self, subject, message):
         """
-        Send an email notification
+        Send an email notification.
         
         Args:
-            recipient: Email recipient address
-            subject: Email subject
-            body: Email body (HTML or plain text)
+            subject (str): Email subject
+            message (str): Email message
             
         Returns:
-            True if successful, False otherwise
+            bool: True if email was sent successfully, False otherwise
         """
-        if not self.email_sender or not self.email_password:
-            logger.warning("Email credentials not configured. Set EMAIL_SENDER and EMAIL_PASSWORD environment variables.")
+        if not self.email_enabled:
+            self.logger.warning("Email notifications not configured")
             return False
-        
+            
         try:
-            # Create message
             msg = MIMEMultipart()
             msg['From'] = self.email_sender
-            msg['To'] = recipient
+            msg['To'] = self.email_recipient
             msg['Subject'] = subject
             
-            # Attach body
-            msg.attach(MIMEText(body, 'html'))
+            msg.attach(MIMEText(message, 'plain'))
             
-            # Connect to server and send
-            with smtplib.SMTP(self.email_server, self.email_port) as server:
+            with smtplib.SMTP(self.smtp_server, self.smtp_port) as server:
                 server.starttls()
                 server.login(self.email_sender, self.email_password)
                 server.send_message(msg)
-            
-            logger.info(f"Email notification sent to {recipient}")
+                
+            self.logger.info(f"Email notification sent to {self.email_recipient}")
             return True
             
         except Exception as e:
-            logger.error(f"Error sending email notification: {e}")
+            self.logger.error(f"Failed to send email notification: {str(e)}")
             return False
-    
-    def schedule_notification(self, title, message, schedule_time, notify_methods=None):
-        """
-        Schedule a notification for future delivery
-        
-        Args:
-            title: Notification title
-            message: Notification message
-            schedule_time: Datetime when notification should be sent
-            notify_methods: List of notification methods ('system', 'email', 'telegram')
             
-        Returns:
-            Notification ID if scheduled successfully, None otherwise
+    def check_medicine_schedule(self):
         """
-        if notify_methods is None:
-            notify_methods = ['system']
-            
+        Check which medicines should be taken now and send notifications.
+        """
         try:
-            # Create unique notification ID
-            notification_id = f"notify_{int(time.time())}_{hash(title) % 10000}"
+            now = datetime.datetime.now()
+            current_time = now.strftime("%H:%M")
+            current_date = now.strftime("%Y-%m-%d")
             
-            # Calculate seconds until notification
-            now = datetime.now()
-            delay_seconds = (schedule_time - now).total_seconds()
+            # Get medicines with reminders scheduled for current time
+            medicines = self.db_manager.get_medicines_for_time(current_time)
             
-            if delay_seconds <= 0:
-                logger.warning(f"Scheduled time {schedule_time} is in the past. Sending immediately.")
+            for medicine in medicines:
+                name = medicine["name"]
+                dosage = medicine["dosage"]
+                
+                # Skip if medicine has expired
+                if medicine["expiry_date"] < current_date:
+                    continue
+                    
+                # Determine if this is the last dose
+                doses_remaining = medicine.get("doses_remaining")
+                last_dose_warning = ""
+                if doses_remaining is not None and doses_remaining <= 3:
+                    last_dose_warning = f" (Only {doses_remaining} dose(s) remaining!)"
+                
+                # Send system notification
+                title = f"Medicine Reminder: {name}"
+                message = f"Time to take {name} - {dosage}{last_dose_warning}"
                 self.send_system_notification(title, message)
-                return notification_id
-            
-            # Create a timer thread to send the notification
-            timer = threading.Timer(
-                delay_seconds,
-                self._send_scheduled_notification,
-                args=[notification_id, title, message, notify_methods]
-            )
-            timer.daemon = True
-            timer.start()
-            
-            logger.info(f"Notification scheduled for {schedule_time}")
-            return notification_id
-            
+                
+                # Send email notification if enabled
+                if self.email_enabled:
+                    email_subject = f"Medicine Reminder: {name}"
+                    email_message = (
+                        f"Dear User,\n\n"
+                        f"This is a reminder to take your medicine: {name}\n"
+                        f"Dosage: {dosage}\n"
+                        f"{last_dose_warning}\n\n"
+                        f"Time: {current_time}\n"
+                        f"Date: {current_date}\n\n"
+                        f"Stay healthy!\n"
+                        f"Your Medicine Reminder App"
+                    )
+                    self.send_email_notification(email_subject, email_message)
+                    
         except Exception as e:
-            logger.error(f"Error scheduling notification: {e}")
-            return None
-    
-    def _send_scheduled_notification(self, notification_id, title, message, notify_methods):
-        """Send a scheduled notification via specified methods"""
+            self.logger.error(f"Error checking medicine schedule: {str(e)}")
+            
+    def check_expiring_medicines(self):
+        """
+        Check for medicines that are about to expire and send notifications.
+        """
         try:
-            logger.debug(f"Sending scheduled notification {notification_id}")
+            # Get medicines expiring in the next 7 days
+            expiring_medicines = self.db_manager.get_expiring_medicines(days=7)
             
-            # Send via each requested method
-            for method in notify_methods:
-                if method == 'system':
-                    self.send_system_notification(title, message)
-                elif method == 'email':
-                    # Would need recipient from somewhere
-                    pass
-                elif method == 'telegram':
-                    # Would need chat_id from somewhere
-                    pass
-            
+            if not expiring_medicines:
+                return
+                
+            # Group medicines by expiry date
+            by_date = {}
+            for medicine in expiring_medicines:
+                expiry = medicine["expiry_date"]
+                if expiry not in by_date:
+                    by_date[expiry] = []
+                by_date[expiry].append(medicine["name"])
+                
+            # Send notifications for each expiry date
+            for expiry_date, names in by_date.items():
+                medicine_list = ", ".join(names)
+                
+                # System notification
+                title = "Medicine Expiry Warning"
+                message = f"Medicines expiring on {expiry_date}: {medicine_list}"
+                self.send_system_notification(title, message, timeout=15)
+                
+                # Email notification
+                if self.email_enabled:
+                    email_subject = "Medicine Expiry Warning"
+                    email_message = (
+                        f"Dear User,\n\n"
+                        f"The following medicines will expire on {expiry_date}:\n"
+                        f"{medicine_list}\n\n"
+                        f"Please consider replacing them soon.\n\n"
+                        f"Your Medicine Reminder App"
+                    )
+                    self.send_email_notification(email_subject, email_message)
+                    
         except Exception as e:
-            logger.error(f"Error sending scheduled notification: {e}")
-    
-    def _cleanup_notifications(self):
-        """Clean up expired notifications periodically"""
-        while True:
-            try:
-                current_time = datetime.now().timestamp()
-                
-                # Find expired notifications
-                expired = [nid for nid, data in self.active_notifications.items() 
-                          if data.get("expiry", 0) < current_time]
-                
-                # Remove expired
-                for nid in expired:
-                    self.active_notifications.pop(nid, None)
-                
-                # Sleep for a while
-                time.sleep(30)
-                
-            except Exception as e:
-                logger.error(f"Error in notification cleanup: {e}")
-                time.sleep(60)  # Sleep longer if there was an error
+            self.logger.error(f"Error checking expiring medicines: {str(e)}")
+            
+    def _run_scheduler(self):
+        """
+        Run the scheduler in a separate thread.
+        """
+        # Schedule medicine reminders to run every minute
+        schedule.every(1).minutes.do(self.check_medicine_schedule)
+        
+        # Schedule expiry check to run once a day
+        schedule.every().day.at("09:00").do(self.check_expiring_medicines)
+        
+        while not self.stop_flag.is_set():
+            schedule.run_pending()
+            time.sleep(10)  # Sleep for 10 seconds before next check
+            
+    def start_scheduler(self):
+        """
+        Start the notification scheduler in a background thread.
+        """
+        if self.notification_thread is not None and self.notification_thread.is_alive():
+            self.logger.warning("Notification scheduler already running")
+            return
+            
+        self.stop_flag.clear()
+        self.notification_thread = threading.Thread(target=self._run_scheduler)
+        self.notification_thread.daemon = True
+        self.notification_thread.start()
+        self.logger.info("Notification scheduler started")
+        
+    def stop_scheduler(self):
+        """
+        Stop the notification scheduler.
+        """
+        if self.notification_thread is not None:
+            self.stop_flag.set()
+            self.notification_thread.join(timeout=5.0)
+            self.notification_thread = None
+            self.logger.info("Notification scheduler stopped")

@@ -1,1752 +1,2133 @@
-import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
-import cv2
-from PIL import Image, ImageTk
-import datetime
-import threading
-import calendar
 import os
 import sys
 import logging
+import tkinter as tk
+from tkinter import ttk, messagebox, filedialog
+import datetime
+import time
+import threading
+import cv2
+import numpy as np
+from PIL import Image, ImageTk
+import calendar
+import webbrowser
 
-# Add src directory to path for imports
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-logger = logging.getLogger(__name__)
+# Calendar widget for schedule view
+from tkcalendar import Calendar
 
 class MedicineReminderApp:
-    """Main GUI class for the Medicine Reminder Application"""
+    """
+    Main GUI class for the Medicine Reminder Application.
+    """
     
-    def __init__(self, root, controller):
+    def __init__(self, root, db_manager, notifier, telegram_bot, drive_sync, pharmacy_locator, 
+                 calendar_integration, sheets_integration):
+        """
+        Initialize the GUI.
+        
+        Args:
+            root: Tkinter root window
+            db_manager: Database manager instance
+            notifier: Notification manager instance
+            telegram_bot: Telegram bot instance
+            drive_sync: Google Drive sync instance
+            pharmacy_locator: Pharmacy locator instance
+            calendar_integration: Google Calendar integration instance
+            sheets_integration: Google Sheets integration instance
+        """
+        self.logger = logging.getLogger(__name__)
         self.root = root
-        self.controller = controller
+        self.db_manager = db_manager
+        self.notifier = notifier
+        self.telegram_bot = telegram_bot
+        self.drive_sync = drive_sync
+        self.pharmacy_locator = pharmacy_locator
+        self.calendar_integration = calendar_integration
+        self.sheets_integration = sheets_integration
         
         # Set up the main window
         self.root.title("Medicine Reminder")
-        self.root.geometry("900x700")
+        self.root.geometry("1000x700")
         self.root.minsize(800, 600)
         
-        # Initialize variables
+        # Variables for camera/scanning
         self.camera_active = False
+        self.cap = None
         self.camera_thread = None
-        self.video_capture = None
+        self.stop_camera_flag = threading.Event()
         
-        # Create GUI components
-        self.create_menu()
-        self.create_notebook()
+        # Variables for form fields
+        self.medicine_name_var = tk.StringVar()
+        self.barcode_var = tk.StringVar()
+        self.dosage_var = tk.StringVar()
+        self.expiry_date_var = tk.StringVar()
+        self.doses_remaining_var = tk.StringVar()
+        self.notes_var = tk.StringVar()
+        self.search_var = tk.StringVar()
+        self.location_var = tk.StringVar()
+        self.radius_var = tk.StringVar(value="5")  # Default 5 km
         
-        # Load initial data
-        self.load_medicines_data()
-        self.update_calendar_view()
-        
-    def create_menu(self):
-        """Create the application menu bar"""
-        menubar = tk.Menu(self.root)
-        
-        # File menu
-        file_menu = tk.Menu(menubar, tearoff=0)
-        file_menu.add_command(label="Backup to Cloud", command=self.backup_to_cloud)
-        file_menu.add_command(label="Restore from Cloud", command=self.restore_from_cloud)
-        file_menu.add_separator()
-        file_menu.add_command(label="Exit", command=self.root.quit)
-        menubar.add_cascade(label="File", menu=file_menu)
-        
-        # Tools menu
-        tools_menu = tk.Menu(menubar, tearoff=0)
-        tools_menu.add_command(label="Find Nearby Pharmacies", command=self.find_pharmacies)
-        tools_menu.add_command(label="Settings", command=self.open_settings)
-        menubar.add_cascade(label="Tools", menu=tools_menu)
-        
-        # Help menu
-        help_menu = tk.Menu(menubar, tearoff=0)
-        help_menu.add_command(label="About", command=self.show_about)
-        menubar.add_cascade(label="Help", menu=help_menu)
-        
-        self.root.config(menu=menubar)
-    
-    def create_notebook(self):
-        """Create the main tabbed interface"""
-        self.notebook = ttk.Notebook(self.root)
-        self.notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        # Create the tab control
+        self.tab_control = ttk.Notebook(self.root)
         
         # Create tabs
-        self.dashboard_tab = ttk.Frame(self.notebook)
-        self.medicines_tab = ttk.Frame(self.notebook)
-        self.scanner_tab = ttk.Frame(self.notebook)
-        self.calendar_tab = ttk.Frame(self.notebook)
+        self.home_tab = ttk.Frame(self.tab_control)
+        self.medicines_tab = ttk.Frame(self.tab_control)
+        self.schedule_tab = ttk.Frame(self.tab_control)
+        self.scan_tab = ttk.Frame(self.tab_control)
+        self.pharmacy_tab = ttk.Frame(self.tab_control)
+        self.settings_tab = ttk.Frame(self.tab_control)
         
-        self.notebook.add(self.dashboard_tab, text="Dashboard")
-        self.notebook.add(self.medicines_tab, text="Medicines")
-        self.notebook.add(self.scanner_tab, text="Barcode Scanner")
-        self.notebook.add(self.calendar_tab, text="Calendar")
+        # Add tabs to the notebook
+        self.tab_control.add(self.home_tab, text="Home")
+        self.tab_control.add(self.medicines_tab, text="Medicines")
+        self.tab_control.add(self.schedule_tab, text="Schedule")
+        self.tab_control.add(self.scan_tab, text="Scan")
+        self.tab_control.add(self.pharmacy_tab, text="Find Pharmacy")
+        self.tab_control.add(self.settings_tab, text="Settings")
+        
+        self.tab_control.pack(expand=1, fill="both")
         
         # Set up each tab
-        self.setup_dashboard_tab()
+        self.setup_home_tab()
         self.setup_medicines_tab()
-        self.setup_scanner_tab()
-        self.setup_calendar_tab()
+        self.setup_schedule_tab()
+        self.setup_scan_tab()
+        self.setup_pharmacy_tab()
+        self.setup_settings_tab()
+        
+        # Add event for tab change
+        self.tab_control.bind("<<NotebookTabChanged>>", self.on_tab_change)
+        
+        # Load data for the first time
+        self.refresh_medicine_list()
+        self.refresh_home_tab()
+        self.refresh_schedule_tab()
+        
+        self.logger.info("GUI initialized")
+        
+    def on_tab_change(self, event):
+        """
+        Handle tab change events.
+        
+        Args:
+            event: The tab change event
+        """
+        tab_id = self.tab_control.select()
+        tab_name = self.tab_control.tab(tab_id, "text")
+        
+        if tab_name == "Home":
+            self.refresh_home_tab()
+        elif tab_name == "Medicines":
+            self.refresh_medicine_list()
+        elif tab_name == "Schedule":
+            self.refresh_schedule_tab()
+        elif tab_name == "Scan":
+            # If entering scan tab, prepare camera
+            if not self.camera_active:
+                self.prepare_camera()
+        elif tab_name == "Find Pharmacy":
+            pass
+        elif tab_name == "Settings":
+            pass
+            
+        # If leaving scan tab, stop the camera
+        if tab_name != "Scan" and self.camera_active:
+            self.stop_camera()
     
-    def setup_dashboard_tab(self):
-        """Create the dashboard tab with upcoming reminders and statistics"""
-        frame = ttk.Frame(self.dashboard_tab, padding=10)
-        frame.pack(fill=tk.BOTH, expand=True)
+    # ----- Home Tab -----
+    
+    def setup_home_tab(self):
+        """Set up the home tab with today's medicines and streak information."""
+        # Top frame for streak information
+        self.home_top_frame = ttk.Frame(self.home_tab, padding=10)
+        self.home_top_frame.pack(fill=tk.X, padx=10, pady=10)
         
-        # Title
-        ttk.Label(frame, text="Medicine Reminder Dashboard", font=("TkDefaultFont", 16, "bold")).pack(pady=(0, 20))
+        # Welcome label
+        welcome_label = ttk.Label(
+            self.home_top_frame, 
+            text="Medicine Reminder", 
+            font=("Arial", 18, "bold")
+        )
+        welcome_label.pack(pady=10)
         
-        # Upcoming reminders section
-        reminders_frame = ttk.LabelFrame(frame, text="Upcoming Reminders")
-        reminders_frame.pack(fill=tk.BOTH, expand=True, pady=10)
+        # Streak frame
+        self.streak_frame = ttk.LabelFrame(self.home_top_frame, text="Your Progress", padding=10)
+        self.streak_frame.pack(fill=tk.X, pady=10)
         
-        # Reminders list
-        self.reminders_tree = ttk.Treeview(reminders_frame, columns=("Medicine", "Dosage", "Time"), show="headings", height=6)
-        self.reminders_tree.heading("Medicine", text="Medicine")
-        self.reminders_tree.heading("Dosage", text="Dosage")
-        self.reminders_tree.heading("Time", text="Reminder Time")
+        # Current streak
+        self.current_streak_label = ttk.Label(
+            self.streak_frame, 
+            text="Current Streak: 0 days", 
+            font=("Arial", 12)
+        )
+        self.current_streak_label.pack(anchor=tk.W, pady=5)
         
-        self.reminders_tree.column("Medicine", width=200)
-        self.reminders_tree.column("Dosage", width=100)
-        self.reminders_tree.column("Time", width=150)
+        # Longest streak
+        self.longest_streak_label = ttk.Label(
+            self.streak_frame, 
+            text="Longest Streak: 0 days", 
+            font=("Arial", 12)
+        )
+        self.longest_streak_label.pack(anchor=tk.W, pady=5)
         
-        self.reminders_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5, pady=5)
+        # Today's medicines frame
+        self.today_frame = ttk.LabelFrame(self.home_tab, text="Today's Medicines", padding=10)
+        self.today_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         
-        # Add scrollbar
-        scrollbar = ttk.Scrollbar(reminders_frame, orient=tk.VERTICAL, command=self.reminders_tree.yview)
-        self.reminders_tree.configure(yscrollcommand=scrollbar.set)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        # Scrollable frame for medicines
+        self.today_scrollframe = ttk.Frame(self.today_frame)
+        self.today_scrollframe.pack(fill=tk.BOTH, expand=True)
         
-        # Stats section
-        stats_frame = ttk.LabelFrame(frame, text="Statistics")
-        stats_frame.pack(fill=tk.X, pady=10)
+        # Scrollbar
+        self.today_scrollbar = ttk.Scrollbar(self.today_scrollframe)
+        self.today_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         
-        # Statistics grid
-        self.total_medicines_label = ttk.Label(stats_frame, text="Total Medicines: 0")
-        self.total_medicines_label.grid(row=0, column=0, padx=20, pady=10, sticky=tk.W)
+        # Canvas for scrolling
+        self.today_canvas = tk.Canvas(self.today_scrollframe)
+        self.today_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         
-        self.expiring_medicines_label = ttk.Label(stats_frame, text="Expiring Soon: 0")
-        self.expiring_medicines_label.grid(row=0, column=1, padx=20, pady=10, sticky=tk.W)
+        # Configure scrollbar
+        self.today_scrollbar.configure(command=self.today_canvas.yview)
+        self.today_canvas.configure(yscrollcommand=self.today_scrollbar.set)
         
-        self.reminders_today_label = ttk.Label(stats_frame, text="Reminders Today: 0")
-        self.reminders_today_label.grid(row=1, column=0, padx=20, pady=10, sticky=tk.W)
+        # Bind scroll event
+        self.today_canvas.bind('<Configure>', 
+            lambda e: self.today_canvas.configure(scrollregion=self.today_canvas.bbox('all')))
         
-        self.adherence_label = ttk.Label(stats_frame, text="Adherence Rate: 0%")
-        self.adherence_label.grid(row=1, column=1, padx=20, pady=10, sticky=tk.W)
+        # Create a frame inside the canvas for medicines
+        self.today_medicines_frame = ttk.Frame(self.today_canvas)
+        self.today_canvas.create_window((0, 0), window=self.today_medicines_frame, anchor=tk.NW)
         
-        # Action buttons
-        buttons_frame = ttk.Frame(frame)
-        buttons_frame.pack(fill=tk.X, pady=10)
+        # Button frame at the bottom
+        self.home_button_frame = ttk.Frame(self.home_tab, padding=10)
+        self.home_button_frame.pack(fill=tk.X, padx=10, pady=10)
         
-        ttk.Button(buttons_frame, text="Add Medicine", command=self.add_medicine_dialog).pack(side=tk.LEFT, padx=5)
-        ttk.Button(buttons_frame, text="Scan Barcode", command=lambda: self.notebook.select(self.scanner_tab)).pack(side=tk.LEFT, padx=5)
-        ttk.Button(buttons_frame, text="View Calendar", command=lambda: self.notebook.select(self.calendar_tab)).pack(side=tk.LEFT, padx=5)
-        ttk.Button(buttons_frame, text="Refresh", command=self.refresh_dashboard).pack(side=tk.LEFT, padx=5)
+        # Refresh button
+        self.refresh_button = ttk.Button(
+            self.home_button_frame, 
+            text="Refresh", 
+            command=self.refresh_home_tab
+        )
+        self.refresh_button.pack(side=tk.RIGHT, padx=5)
         
-        # Sync status
-        self.sync_status_label = ttk.Label(frame, text="Last synced: Never")
-        self.sync_status_label.pack(anchor=tk.E, pady=5)
+        # Add Medicine button
+        self.add_med_button = ttk.Button(
+            self.home_button_frame, 
+            text="Add Medicine", 
+            command=lambda: self.tab_control.select(self.medicines_tab)
+        )
+        self.add_med_button.pack(side=tk.RIGHT, padx=5)
         
-        # Load dashboard data
-        self.refresh_dashboard()
+        # View Schedule button
+        self.view_schedule_button = ttk.Button(
+            self.home_button_frame, 
+            text="View Schedule", 
+            command=lambda: self.tab_control.select(self.schedule_tab)
+        )
+        self.view_schedule_button.pack(side=tk.RIGHT, padx=5)
+        
+    def refresh_home_tab(self):
+        """Refresh the home tab content with latest data."""
+        # Update streak information
+        streak_data = self.db_manager.get_streak()
+        current_streak = streak_data.get('current_streak', 0)
+        longest_streak = streak_data.get('longest_streak', 0)
+        
+        self.current_streak_label.config(text=f"Current Streak: {current_streak} days")
+        self.longest_streak_label.config(text=f"Longest Streak: {longest_streak} days")
+        
+        # Clear existing medicines
+        for widget in self.today_medicines_frame.winfo_children():
+            widget.destroy()
+        
+        # Get today's date
+        today = datetime.datetime.now().strftime("%Y-%m-%d")
+        
+        # Get medicines for today
+        medicines = self.db_manager.get_medicines_for_date(today)
+        
+        if not medicines:
+            no_meds_label = ttk.Label(
+                self.today_medicines_frame, 
+                text="No medicines scheduled for today.", 
+                font=("Arial", 12),
+                padding=20
+            )
+            no_meds_label.pack(pady=20)
+            return
+        
+        # Sort medicines by time
+        medicines.sort(key=lambda x: x['time'])
+        
+        # Group medicines by time
+        by_time = {}
+        for med in medicines:
+            time_str = med['time']
+            if time_str not in by_time:
+                by_time[time_str] = []
+            by_time[time_str].append(med)
+        
+        # Create a frame for each time
+        for time_str, meds in by_time.items():
+            # Time frame
+            time_frame = ttk.LabelFrame(
+                self.today_medicines_frame, 
+                text=f"Time: {time_str}", 
+                padding=10
+            )
+            time_frame.pack(fill=tk.X, pady=5, padx=5)
+            
+            # Add each medicine
+            for med in meds:
+                med_frame = ttk.Frame(time_frame, padding=5)
+                med_frame.pack(fill=tk.X, pady=2)
+                
+                # Medicine name and dosage
+                med_label = ttk.Label(
+                    med_frame, 
+                    text=f"{med['name']} - {med['dosage']}", 
+                    font=("Arial", 12)
+                )
+                med_label.pack(side=tk.LEFT, padx=5)
+                
+                # "Taken" button
+                taken_button = ttk.Button(
+                    med_frame, 
+                    text="Mark as Taken", 
+                    command=lambda m=med: self.mark_medicine_taken(m)
+                )
+                taken_button.pack(side=tk.RIGHT, padx=5)
+                
+                # Add a separator
+                separator = ttk.Separator(time_frame, orient=tk.HORIZONTAL)
+                separator.pack(fill=tk.X, pady=5)
+        
+        # Update the canvas
+        self.today_canvas.update_idletasks()
+        self.today_canvas.configure(scrollregion=self.today_canvas.bbox('all'))
+    
+    def mark_medicine_taken(self, medicine):
+        """
+        Mark a medicine as taken and update the database.
+        
+        Args:
+            medicine (dict): The medicine to mark as taken
+        """
+        try:
+            log_id = self.db_manager.log_medicine_intake(medicine['id'], taken=True)
+            if log_id:
+                messagebox.showinfo("Success", f"Marked {medicine['name']} as taken!")
+                self.refresh_home_tab()
+            else:
+                messagebox.showerror("Error", "Failed to record medicine intake.")
+        except Exception as e:
+            self.logger.error(f"Error marking medicine as taken: {str(e)}")
+            messagebox.showerror("Error", f"An error occurred: {str(e)}")
+    
+    # ----- Medicines Tab -----
     
     def setup_medicines_tab(self):
-        """Create the medicines tab with the list of medicines and actions"""
-        frame = ttk.Frame(self.medicines_tab, padding=10)
-        frame.pack(fill=tk.BOTH, expand=True)
+        """Set up the medicines tab with list and add/edit form."""
+        # Left frame for medicine list
+        self.medicines_left_frame = ttk.Frame(self.medicines_tab, padding=10)
+        self.medicines_left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5, pady=10)
         
-        # Title and add button row
-        header_frame = ttk.Frame(frame)
-        header_frame.pack(fill=tk.X, pady=(0, 10))
+        # Search frame
+        search_frame = ttk.Frame(self.medicines_left_frame)
+        search_frame.pack(fill=tk.X, pady=5)
         
-        ttk.Label(header_frame, text="Medicine List", font=("TkDefaultFont", 14, "bold")).pack(side=tk.LEFT)
-        ttk.Button(header_frame, text="Add New Medicine", command=self.add_medicine_dialog).pack(side=tk.RIGHT)
+        search_label = ttk.Label(search_frame, text="Search:")
+        search_label.pack(side=tk.LEFT, padx=5)
         
-        # Search box
-        search_frame = ttk.Frame(frame)
-        search_frame.pack(fill=tk.X, pady=(0, 10))
+        search_entry = ttk.Entry(search_frame, textvariable=self.search_var)
+        search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
         
-        ttk.Label(search_frame, text="Search:").pack(side=tk.LEFT, padx=(0, 5))
-        self.search_var = tk.StringVar()
-        self.search_var.trace("w", lambda name, index, mode: self.filter_medicines())
-        ttk.Entry(search_frame, textvariable=self.search_var, width=30).pack(side=tk.LEFT)
+        search_button = ttk.Button(
+            search_frame, 
+            text="Search", 
+            command=self.refresh_medicine_list
+        )
+        search_button.pack(side=tk.RIGHT, padx=5)
         
-        # Medicines list
-        list_frame = ttk.Frame(frame)
-        list_frame.pack(fill=tk.BOTH, expand=True)
+        # Bind Enter key to search
+        search_entry.bind('<Return>', lambda event: self.refresh_medicine_list())
         
-        # Create treeview for medicines
-        self.medicines_tree = ttk.Treeview(
+        # Medicine list
+        list_frame = ttk.LabelFrame(self.medicines_left_frame, text="Your Medicines")
+        list_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+        
+        # Scrollbar
+        self.medicine_scrollbar = ttk.Scrollbar(list_frame)
+        self.medicine_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # Treeview for medicines
+        self.medicine_tree = ttk.Treeview(
             list_frame, 
-            columns=("Name", "Dosage", "Expiry", "Next Reminder"),
+            columns=("id", "name", "dosage", "expiry"), 
             show="headings",
-            height=15
+            yscrollcommand=self.medicine_scrollbar.set
         )
         
-        # Configure columns
-        self.medicines_tree.heading("Name", text="Medicine Name")
-        self.medicines_tree.heading("Dosage", text="Dosage")
-        self.medicines_tree.heading("Expiry", text="Expiry Date")
-        self.medicines_tree.heading("Next Reminder", text="Next Reminder")
+        # Configure scrollbar
+        self.medicine_scrollbar.config(command=self.medicine_tree.yview)
         
-        self.medicines_tree.column("Name", width=200)
-        self.medicines_tree.column("Dosage", width=100)
-        self.medicines_tree.column("Expiry", width=100)
-        self.medicines_tree.column("Next Reminder", width=150)
+        # Define columns
+        self.medicine_tree.heading("id", text="ID")
+        self.medicine_tree.heading("name", text="Medicine Name")
+        self.medicine_tree.heading("dosage", text="Dosage")
+        self.medicine_tree.heading("expiry", text="Expires")
         
-        self.medicines_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        # Configure column widths
+        self.medicine_tree.column("id", width=50, minwidth=50)
+        self.medicine_tree.column("name", width=150, minwidth=100)
+        self.medicine_tree.column("dosage", width=100, minwidth=80)
+        self.medicine_tree.column("expiry", width=100, minwidth=80)
         
-        # Add scrollbar
-        scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL, command=self.medicines_tree.yview)
-        self.medicines_tree.configure(yscrollcommand=scrollbar.set)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.medicine_tree.pack(fill=tk.BOTH, expand=True)
         
-        # Bind double-click event
-        self.medicines_tree.bind("<Double-1>", self.edit_medicine_dialog)
+        # Bind select event
+        self.medicine_tree.bind('<<TreeviewSelect>>', self.on_medicine_select)
         
-        # Button frame
-        button_frame = ttk.Frame(frame)
-        button_frame.pack(fill=tk.X, pady=10)
+        # Buttons under the list
+        list_button_frame = ttk.Frame(self.medicines_left_frame)
+        list_button_frame.pack(fill=tk.X, pady=5)
         
-        ttk.Button(button_frame, text="Edit", command=lambda: self.edit_medicine_dialog(None)).pack(side=tk.LEFT, padx=(0, 5))
-        ttk.Button(button_frame, text="Delete", command=self.delete_medicine).pack(side=tk.LEFT, padx=5)
-        ttk.Button(button_frame, text="Take Medicine", command=self.mark_as_taken).pack(side=tk.LEFT, padx=5)
-        ttk.Button(button_frame, text="Refresh", command=self.load_medicines_data).pack(side=tk.RIGHT)
-    
-    def setup_scanner_tab(self):
-        """Create the barcode scanner tab"""
-        frame = ttk.Frame(self.scanner_tab, padding=10)
-        frame.pack(fill=tk.BOTH, expand=True)
+        add_button = ttk.Button(
+            list_button_frame, 
+            text="Add New", 
+            command=self.clear_medicine_form
+        )
+        add_button.pack(side=tk.LEFT, padx=5)
         
-        # Title
-        ttk.Label(frame, text="Medicine Barcode Scanner", font=("TkDefaultFont", 14, "bold")).pack(pady=(0, 20))
+        delete_button = ttk.Button(
+            list_button_frame, 
+            text="Delete", 
+            command=self.delete_medicine
+        )
+        delete_button.pack(side=tk.LEFT, padx=5)
         
-        # Camera frame
-        self.camera_frame = ttk.LabelFrame(frame, text="Camera")
-        self.camera_frame.pack(fill=tk.BOTH, expand=True, pady=10)
+        refresh_button = ttk.Button(
+            list_button_frame, 
+            text="Refresh", 
+            command=self.refresh_medicine_list
+        )
+        refresh_button.pack(side=tk.RIGHT, padx=5)
         
-        # Camera view
-        self.camera_label = ttk.Label(self.camera_frame)
-        self.camera_label.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        # Right frame for medicine details
+        self.medicines_right_frame = ttk.Frame(self.medicines_tab, padding=10)
+        self.medicines_right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=5, pady=10)
         
-        # Status and result frame
-        status_frame = ttk.Frame(frame)
-        status_frame.pack(fill=tk.X, pady=10)
+        # Medicine form
+        form_frame = ttk.LabelFrame(self.medicines_right_frame, text="Medicine Details")
+        form_frame.pack(fill=tk.BOTH, expand=True, pady=5)
         
-        self.scan_status_label = ttk.Label(status_frame, text="Status: Ready to scan")
-        self.scan_status_label.pack(side=tk.LEFT)
+        # Medicine Name
+        name_frame = ttk.Frame(form_frame, padding=5)
+        name_frame.pack(fill=tk.X, pady=5)
         
-        self.barcode_result_label = ttk.Label(status_frame, text="")
-        self.barcode_result_label.pack(side=tk.RIGHT)
+        name_label = ttk.Label(name_frame, text="Medicine Name:", width=15)
+        name_label.pack(side=tk.LEFT, padx=5)
         
-        # Buttons
-        buttons_frame = ttk.Frame(frame)
-        buttons_frame.pack(fill=tk.X, pady=10)
-        
-        self.start_camera_button = ttk.Button(buttons_frame, text="Start Camera", command=self.toggle_camera)
-        self.start_camera_button.pack(side=tk.LEFT, padx=(0, 5))
-        
-        ttk.Button(buttons_frame, text="Manual Entry", command=self.add_medicine_dialog).pack(side=tk.LEFT, padx=5)
-        ttk.Button(buttons_frame, text="Load Image", command=self.load_barcode_image).pack(side=tk.LEFT, padx=5)
-    
-    def setup_calendar_tab(self):
-        """Create the calendar tab with the medicine schedule"""
-        frame = ttk.Frame(self.calendar_tab, padding=10)
-        frame.pack(fill=tk.BOTH, expand=True)
-        
-        # Title and navigation frame
-        nav_frame = ttk.Frame(frame)
-        nav_frame.pack(fill=tk.X, pady=(0, 10))
-        
-        ttk.Label(nav_frame, text="Medicine Schedule", font=("TkDefaultFont", 14, "bold")).pack(side=tk.LEFT)
-        
-        self.date_label = ttk.Label(nav_frame, text="")
-        self.date_label.pack(side=tk.RIGHT)
-        
-        # Navigation buttons
-        btn_frame = ttk.Frame(frame)
-        btn_frame.pack(fill=tk.X, pady=(0, 10))
-        
-        ttk.Button(btn_frame, text="< Previous Month", command=lambda: self.change_month(-1)).pack(side=tk.LEFT)
-        ttk.Button(btn_frame, text="Today", command=self.go_to_today).pack(side=tk.LEFT, padx=10)
-        ttk.Button(btn_frame, text="Next Month >", command=lambda: self.change_month(1)).pack(side=tk.LEFT)
-        
-        # Calendar view
-        cal_frame = ttk.Frame(frame)
-        cal_frame.pack(fill=tk.BOTH, expand=True, pady=10)
-        
-        # Create calendar widgets
-        self.calendar_cells = []
-        self.calendar_dates = []
-        
-        # Create grid for calendar
-        self.calendar_grid = ttk.Frame(cal_frame)
-        self.calendar_grid.pack(fill=tk.BOTH, expand=True)
-        
-        # Day headers
-        days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-        for i, day in enumerate(days):
-            ttk.Label(
-                self.calendar_grid, 
-                text=day, 
-                anchor="center",
-                font=("TkDefaultFont", 10, "bold")
-            ).grid(row=0, column=i, sticky="nsew", padx=2, pady=2)
-        
-        # Calendar cells (6 rows, 7 columns)
-        for row in range(6):
-            for col in range(7):
-                cell_frame = ttk.Frame(self.calendar_grid, borderwidth=1, relief="solid")
-                cell_frame.grid(row=row+1, column=col, sticky="nsew", padx=2, pady=2)
-                cell_frame.rowconfigure(0, weight=0)  # Date label
-                cell_frame.rowconfigure(1, weight=1)  # Content
-                
-                date_label = ttk.Label(cell_frame, text="", anchor="nw")
-                date_label.grid(row=0, column=0, sticky="nw", padx=5, pady=2)
-                
-                content_frame = ttk.Frame(cell_frame)
-                content_frame.grid(row=1, column=0, sticky="nsew", padx=3, pady=3)
-                
-                self.calendar_dates.append(date_label)
-                self.calendar_cells.append(content_frame)
-        
-        # Configure grid weights
-        for i in range(7):
-            self.calendar_grid.columnconfigure(i, weight=1)
-        for i in range(7):
-            self.calendar_grid.rowconfigure(i, weight=1)
-        
-        # Set current date
-        self.current_year = datetime.datetime.now().year
-        self.current_month = datetime.datetime.now().month
-        
-        # Daily schedule view
-        schedule_frame = ttk.LabelFrame(frame, text="Daily Schedule")
-        schedule_frame.pack(fill=tk.X, pady=10)
-        
-        self.selected_date_label = ttk.Label(schedule_frame, text="No date selected", font=("TkDefaultFont", 11, "bold"))
-        self.selected_date_label.pack(anchor="w", padx=10, pady=(5, 10))
-        
-        # Daily reminders list
-        self.daily_reminders_frame = ttk.Frame(schedule_frame)
-        self.daily_reminders_frame.pack(fill=tk.X, padx=10, pady=(0, 10))
-        
-        # Update calendar
-        self.update_calendar_view()
-        
-    def load_medicines_data(self):
-        """Load medicines data from database and populate the treeview"""
-        try:
-            # Clear existing data
-            for item in self.medicines_tree.get_children():
-                self.medicines_tree.delete(item)
-            
-            # Get medicines from database
-            medicines = self.controller.db.get_all_medicines()
-            
-            # Add to treeview
-            for medicine in medicines:
-                self.medicines_tree.insert(
-                    "", "end", 
-                    values=(
-                        medicine["name"],
-                        medicine["dosage"],
-                        medicine["expiry_date"],
-                        medicine["next_reminder"]
-                    ),
-                    iid=medicine["id"]
-                )
-        except Exception as e:
-            logger.error(f"Error loading medicines data: {e}")
-            messagebox.showerror("Error", f"Failed to load medicines: {e}")
-    
-    def refresh_dashboard(self):
-        """Refresh dashboard data"""
-        try:
-            # Clear existing reminders
-            for item in self.reminders_tree.get_children():
-                self.reminders_tree.delete(item)
-            
-            # Get upcoming reminders
-            now = datetime.datetime.now()
-            tomorrow = now + datetime.timedelta(days=1)
-            reminders = self.controller.db.get_upcoming_reminders(now, tomorrow)
-            
-            # Add to reminders tree
-            for reminder in reminders:
-                self.reminders_tree.insert(
-                    "", "end",
-                    values=(
-                        reminder["name"],
-                        reminder["dosage"],
-                        reminder["next_reminder"]
-                    )
-                )
-            
-            # Update statistics
-            all_medicines = self.controller.db.get_all_medicines()
-            expiring_soon = [m for m in all_medicines if self._is_expiring_soon(m["expiry_date"])]
-            
-            today_reminders = self.controller.db.get_todays_reminders()
-            adherence_rate = self.controller.db.get_adherence_rate()
-            
-            # Update labels
-            self.total_medicines_label.config(text=f"Total Medicines: {len(all_medicines)}")
-            self.expiring_medicines_label.config(text=f"Expiring Soon: {len(expiring_soon)}")
-            self.reminders_today_label.config(text=f"Reminders Today: {len(today_reminders)}")
-            self.adherence_label.config(text=f"Adherence Rate: {adherence_rate:.1f}%")
-            
-            # Update sync status
-            last_sync = self.controller.cloud_sync.get_last_sync_time()
-            if last_sync:
-                self.sync_status_label.config(text=f"Last synced: {last_sync}")
-            else:
-                self.sync_status_label.config(text="Last synced: Never")
-                
-        except Exception as e:
-            logger.error(f"Error refreshing dashboard: {e}")
-            messagebox.showerror("Error", f"Failed to refresh dashboard: {e}")
-    
-    def _is_expiring_soon(self, expiry_date_str):
-        """Check if a medicine is expiring within 30 days"""
-        try:
-            expiry_date = datetime.datetime.strptime(expiry_date_str, "%Y-%m-%d")
-            now = datetime.datetime.now()
-            days_remaining = (expiry_date - now).days
-            return 0 <= days_remaining <= 30
-        except:
-            return False
-    
-    def filter_medicines(self):
-        """Filter medicines list based on search text"""
-        search_text = self.search_var.get().lower()
-        
-        # Clear the tree
-        for item in self.medicines_tree.get_children():
-            self.medicines_tree.delete(item)
-        
-        # Filter and re-populate
-        medicines = self.controller.db.get_all_medicines()
-        for medicine in medicines:
-            if (search_text in medicine["name"].lower() or 
-                search_text in medicine["dosage"].lower()):
-                self.medicines_tree.insert(
-                    "", "end", 
-                    values=(
-                        medicine["name"],
-                        medicine["dosage"],
-                        medicine["expiry_date"],
-                        medicine["next_reminder"]
-                    ),
-                    iid=medicine["id"]
-                )
-    
-    def add_medicine_dialog(self):
-        """Open dialog to add a new medicine"""
-        dialog = tk.Toplevel(self.root)
-        dialog.title("Add New Medicine")
-        dialog.geometry("500x550")
-        dialog.transient(self.root)
-        dialog.grab_set()
-        
-        # Form frame
-        form_frame = ttk.Frame(dialog, padding=20)
-        form_frame.pack(fill=tk.BOTH, expand=True)
-        
-        # Form fields
-        ttk.Label(form_frame, text="Medicine Information", font=("TkDefaultFont", 12, "bold")).grid(
-            row=0, column=0, columnspan=2, sticky="w", pady=(0, 15))
+        name_entry = ttk.Entry(name_frame, textvariable=self.medicine_name_var)
+        name_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
         
         # Barcode
-        ttk.Label(form_frame, text="Barcode:").grid(row=1, column=0, sticky="w", pady=5)
-        barcode_var = tk.StringVar()
-        ttk.Entry(form_frame, textvariable=barcode_var, width=30).grid(row=1, column=1, sticky="w")
+        barcode_frame = ttk.Frame(form_frame, padding=5)
+        barcode_frame.pack(fill=tk.X, pady=5)
         
-        # Name
-        ttk.Label(form_frame, text="Name:").grid(row=2, column=0, sticky="w", pady=5)
-        name_var = tk.StringVar()
-        ttk.Entry(form_frame, textvariable=name_var, width=30).grid(row=2, column=1, sticky="w")
+        barcode_label = ttk.Label(barcode_frame, text="Barcode:", width=15)
+        barcode_label.pack(side=tk.LEFT, padx=5)
+        
+        barcode_entry = ttk.Entry(barcode_frame, textvariable=self.barcode_var)
+        barcode_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+        
+        scan_button = ttk.Button(
+            barcode_frame, 
+            text="Scan", 
+            command=lambda: self.tab_control.select(self.scan_tab)
+        )
+        scan_button.pack(side=tk.RIGHT, padx=5)
         
         # Dosage
-        ttk.Label(form_frame, text="Dosage:").grid(row=3, column=0, sticky="w", pady=5)
-        dosage_var = tk.StringVar()
-        ttk.Entry(form_frame, textvariable=dosage_var, width=30).grid(row=3, column=1, sticky="w")
+        dosage_frame = ttk.Frame(form_frame, padding=5)
+        dosage_frame.pack(fill=tk.X, pady=5)
         
-        # Expiry date
-        ttk.Label(form_frame, text="Expiry Date:").grid(row=4, column=0, sticky="w", pady=5)
-        expiry_frame = ttk.Frame(form_frame)
-        expiry_frame.grid(row=4, column=1, sticky="w")
+        dosage_label = ttk.Label(dosage_frame, text="Dosage:", width=15)
+        dosage_label.pack(side=tk.LEFT, padx=5)
         
-        # Date picker components
-        year_var = tk.StringVar(value=str(datetime.datetime.now().year))
-        month_var = tk.StringVar(value=str(datetime.datetime.now().month))
-        day_var = tk.StringVar(value=str(datetime.datetime.now().day))
+        dosage_entry = ttk.Entry(dosage_frame, textvariable=self.dosage_var)
+        dosage_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
         
-        ttk.Spinbox(expiry_frame, from_=1, to=31, width=3, textvariable=day_var).pack(side=tk.LEFT)
-        ttk.Label(expiry_frame, text="/").pack(side=tk.LEFT)
-        ttk.Spinbox(expiry_frame, from_=1, to=12, width=3, textvariable=month_var).pack(side=tk.LEFT)
-        ttk.Label(expiry_frame, text="/").pack(side=tk.LEFT)
-        ttk.Spinbox(expiry_frame, from_=2023, to=2050, width=5, textvariable=year_var).pack(side=tk.LEFT)
+        # Expiry Date
+        expiry_frame = ttk.Frame(form_frame, padding=5)
+        expiry_frame.pack(fill=tk.X, pady=5)
         
-        # Reminders section
-        ttk.Label(form_frame, text="Reminder Settings", font=("TkDefaultFont", 12, "bold")).grid(
-            row=5, column=0, columnspan=2, sticky="w", pady=(20, 15))
+        expiry_label = ttk.Label(expiry_frame, text="Expiry Date:", width=15)
+        expiry_label.pack(side=tk.LEFT, padx=5)
         
-        # Reminder frequency
-        ttk.Label(form_frame, text="Frequency:").grid(row=6, column=0, sticky="w", pady=5)
-        frequency_var = tk.StringVar(value="daily")
-        ttk.Combobox(form_frame, textvariable=frequency_var, 
-                    values=["daily", "weekly", "monthly"]).grid(row=6, column=1, sticky="w")
+        expiry_entry = ttk.Entry(expiry_frame, textvariable=self.expiry_date_var)
+        expiry_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
         
-        # Times per day
-        ttk.Label(form_frame, text="Times per Day:").grid(row=7, column=0, sticky="w", pady=5)
-        times_var = tk.IntVar(value=1)
-        ttk.Spinbox(form_frame, from_=1, to=5, width=5, textvariable=times_var).grid(row=7, column=1, sticky="w")
+        cal_button = ttk.Button(
+            expiry_frame, 
+            text="...", 
+            width=3,
+            command=self.show_calendar_for_expiry
+        )
+        cal_button.pack(side=tk.RIGHT)
         
-        # Reminder time
-        ttk.Label(form_frame, text="First Reminder:").grid(row=8, column=0, sticky="w", pady=5)
-        time_frame = ttk.Frame(form_frame)
-        time_frame.grid(row=8, column=1, sticky="w")
+        # Doses Remaining
+        doses_frame = ttk.Frame(form_frame, padding=5)
+        doses_frame.pack(fill=tk.X, pady=5)
         
-        hour_var = tk.StringVar(value="9")
-        minute_var = tk.StringVar(value="00")
+        doses_label = ttk.Label(doses_frame, text="Doses Remaining:", width=15)
+        doses_label.pack(side=tk.LEFT, padx=5)
         
-        ttk.Spinbox(time_frame, from_=0, to=23, width=3, textvariable=hour_var).pack(side=tk.LEFT)
-        ttk.Label(time_frame, text=":").pack(side=tk.LEFT)
-        ttk.Spinbox(time_frame, from_=0, to=59, width=3, textvariable=minute_var).pack(side=tk.LEFT)
+        doses_entry = ttk.Entry(doses_frame, textvariable=self.doses_remaining_var)
+        doses_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
         
-        # Notification options
-        ttk.Label(form_frame, text="Notifications", font=("TkDefaultFont", 12, "bold")).grid(
-            row=9, column=0, columnspan=2, sticky="w", pady=(20, 15))
+        # Notes
+        notes_frame = ttk.Frame(form_frame, padding=5)
+        notes_frame.pack(fill=tk.X, pady=5)
         
-        # System notifications
-        system_notify_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(form_frame, text="System Notifications", 
-                       variable=system_notify_var).grid(row=10, column=0, sticky="w", pady=5)
+        notes_label = ttk.Label(notes_frame, text="Notes:", width=15)
+        notes_label.pack(side=tk.LEFT, padx=5)
         
-        # Telegram notifications
-        telegram_notify_var = tk.BooleanVar(value=False)
-        telegram_check = ttk.Checkbutton(form_frame, text="Telegram Notifications", 
-                                         variable=telegram_notify_var)
-        telegram_check.grid(row=10, column=1, sticky="w", pady=5)
+        self.notes_text = tk.Text(notes_frame, height=4, width=30)
+        self.notes_text.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
         
-        # Disable Telegram option if not configured
-        if not self.controller.telegram_bot:
-            telegram_check.configure(state="disabled")
+        # Schedule section
+        schedule_frame = ttk.LabelFrame(form_frame, text="Reminder Schedule")
+        schedule_frame.pack(fill=tk.X, pady=10, padx=5)
         
-        # Google Calendar sync
-        calendar_sync_var = tk.BooleanVar(value=False)
-        calendar_check = ttk.Checkbutton(form_frame, text="Add to Google Calendar", 
-                                       variable=calendar_sync_var)
-        calendar_check.grid(row=11, column=0, sticky="w", pady=5)
+        # Schedule list
+        self.schedule_list_frame = ttk.Frame(schedule_frame)
+        self.schedule_list_frame.pack(fill=tk.X, pady=5)
         
-        # Disable calendar option if not authenticated
-        if not self.controller.calendar.is_authenticated():
-            calendar_check.configure(state="disabled")
+        # Add schedule button
+        add_schedule_button = ttk.Button(
+            schedule_frame, 
+            text="Add Schedule", 
+            command=self.add_schedule_row
+        )
+        add_schedule_button.pack(pady=5)
         
-        # Button frame
-        button_frame = ttk.Frame(form_frame)
-        button_frame.grid(row=12, column=0, columnspan=2, pady=20)
+        # Save button
+        save_button = ttk.Button(
+            form_frame, 
+            text="Save Medicine", 
+            command=self.save_medicine
+        )
+        save_button.pack(pady=10)
         
-        ttk.Button(button_frame, text="Cancel", command=dialog.destroy).pack(side=tk.LEFT, padx=5)
+        # Hidden field for medicine ID (for editing)
+        self.current_medicine_id = None
         
-        # Save button with form validation and processing
-        def save_medicine():
-            try:
-                # Validate inputs
-                if not name_var.get().strip():
-                    messagebox.showerror("Error", "Medicine name is required")
-                    return
-                
-                # Create expiry date string
-                try:
-                    expiry_date = f"{year_var.get()}-{int(month_var.get()):02d}-{int(day_var.get()):02d}"
-                    datetime.datetime.strptime(expiry_date, "%Y-%m-%d")  # Validate format
-                except ValueError:
-                    messagebox.showerror("Error", "Invalid expiry date")
-                    return
-                
-                # Create reminder time
-                try:
-                    reminder_time = f"{int(hour_var.get()):02d}:{int(minute_var.get()):02d}"
-                except ValueError:
-                    messagebox.showerror("Error", "Invalid reminder time")
-                    return
-                
-                # Save medicine to database
-                medicine_data = {
-                    "barcode": barcode_var.get().strip(),
-                    "name": name_var.get().strip(),
-                    "dosage": dosage_var.get().strip(),
-                    "expiry_date": expiry_date,
-                    "reminder_frequency": frequency_var.get(),
-                    "times_per_day": times_var.get(),
-                    "reminder_time": reminder_time,
-                    "system_notify": system_notify_var.get(),
-                    "telegram_notify": telegram_notify_var.get(),
-                    "calendar_sync": calendar_sync_var.get()
-                }
-                
-                self.controller.db.add_medicine(medicine_data)
-                
-                # Add to Google Calendar if enabled
-                if calendar_sync_var.get() and self.controller.calendar.is_authenticated():
-                    self.controller.calendar.add_medicine_reminder(medicine_data)
-                
-                # Refresh data
-                self.load_medicines_data()
-                self.refresh_dashboard()
-                self.update_calendar_view()
-                
-                dialog.destroy()
-                messagebox.showinfo("Success", f"Medicine '{name_var.get()}' added successfully")
-                
-            except Exception as e:
-                logger.error(f"Error adding medicine: {e}")
-                messagebox.showerror("Error", f"Failed to add medicine: {e}")
+        # Add initial empty schedule row
+        self.add_schedule_row()
         
-        ttk.Button(button_frame, text="Save", command=save_medicine).pack(side=tk.LEFT, padx=5)
-    
-    def edit_medicine_dialog(self, event=None):
-        """Open dialog to edit an existing medicine"""
-        # Get selected item
-        selected_id = self.medicines_tree.focus()
-        if not selected_id:
-            messagebox.showinfo("Information", "Please select a medicine to edit")
-            return
+    def show_calendar_for_expiry(self):
+        """Show a calendar popup for selecting expiry date."""
+        def set_date():
+            date_str = cal.get_date()
+            self.expiry_date_var.set(date_str)
+            top.destroy()
+            
+        top = tk.Toplevel(self.root)
+        top.title("Select Expiry Date")
         
+        # If there's a current date, try to parse it
+        current_date = self.expiry_date_var.get()
         try:
-            # Get medicine data
-            medicine = self.controller.db.get_medicine_by_id(selected_id)
-            if not medicine:
-                messagebox.showerror("Error", "Failed to retrieve medicine details")
-                return
+            if current_date:
+                year, month, day = map(int, current_date.split('-'))
+                cal = Calendar(top, selectmode="day", year=year, month=month, day=day)
+            else:
+                cal = Calendar(top, selectmode="day")
+        except (ValueError, IndexError):
+            cal = Calendar(top, selectmode="day")
             
-            # Create dialog similar to add_medicine_dialog, but pre-populate fields
-            dialog = tk.Toplevel(self.root)
-            dialog.title(f"Edit Medicine: {medicine['name']}")
-            dialog.geometry("500x550")
-            dialog.transient(self.root)
-            dialog.grab_set()
+        cal.pack(padx=10, pady=10)
+        
+        select_button = ttk.Button(top, text="Select", command=set_date)
+        select_button.pack(pady=10)
+        
+    def add_schedule_row(self):
+        """Add a new schedule row to the form."""
+        # Create a frame for the schedule row
+        row_frame = ttk.Frame(self.schedule_list_frame)
+        row_frame.pack(fill=tk.X, pady=2)
+        
+        # Day of week dropdown
+        day_label = ttk.Label(row_frame, text="Day:", width=5)
+        day_label.pack(side=tk.LEFT, padx=2)
+        
+        day_combo = ttk.Combobox(
+            row_frame, 
+            values=["Every day", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"],
+            width=10
+        )
+        day_combo.current(0)  # Default to "Every day"
+        day_combo.pack(side=tk.LEFT, padx=2)
+        
+        # Time entry
+        time_label = ttk.Label(row_frame, text="Time:", width=5)
+        time_label.pack(side=tk.LEFT, padx=2)
+        
+        time_entry = ttk.Entry(row_frame, width=10)
+        # Set a default time (8:00)
+        time_entry.insert(0, "08:00")
+        time_entry.pack(side=tk.LEFT, padx=2)
+        
+        # Remove button
+        remove_button = ttk.Button(
+            row_frame, 
+            text="X", 
+            width=2,
+            command=lambda: row_frame.destroy()
+        )
+        remove_button.pack(side=tk.RIGHT, padx=2)
+        
+    def clear_medicine_form(self):
+        """Clear the medicine form for adding a new medicine."""
+        self.current_medicine_id = None
+        self.medicine_name_var.set("")
+        self.barcode_var.set("")
+        self.dosage_var.set("")
+        self.expiry_date_var.set("")
+        self.doses_remaining_var.set("")
+        self.notes_text.delete(1.0, tk.END)
+        
+        # Clear existing schedule rows
+        for widget in self.schedule_list_frame.winfo_children():
+            widget.destroy()
             
-            # Form frame
-            form_frame = ttk.Frame(dialog, padding=20)
-            form_frame.pack(fill=tk.BOTH, expand=True)
-            
-            # Form fields with pre-populated data
-            ttk.Label(form_frame, text="Medicine Information", font=("TkDefaultFont", 12, "bold")).grid(
-                row=0, column=0, columnspan=2, sticky="w", pady=(0, 15))
-            
-            # Barcode
-            ttk.Label(form_frame, text="Barcode:").grid(row=1, column=0, sticky="w", pady=5)
-            barcode_var = tk.StringVar(value=medicine.get("barcode", ""))
-            ttk.Entry(form_frame, textvariable=barcode_var, width=30).grid(row=1, column=1, sticky="w")
-            
-            # Name
-            ttk.Label(form_frame, text="Name:").grid(row=2, column=0, sticky="w", pady=5)
-            name_var = tk.StringVar(value=medicine["name"])
-            ttk.Entry(form_frame, textvariable=name_var, width=30).grid(row=2, column=1, sticky="w")
-            
-            # Dosage
-            ttk.Label(form_frame, text="Dosage:").grid(row=3, column=0, sticky="w", pady=5)
-            dosage_var = tk.StringVar(value=medicine["dosage"])
-            ttk.Entry(form_frame, textvariable=dosage_var, width=30).grid(row=3, column=1, sticky="w")
-            
-            # Expiry date
-            ttk.Label(form_frame, text="Expiry Date:").grid(row=4, column=0, sticky="w", pady=5)
-            expiry_frame = ttk.Frame(form_frame)
-            expiry_frame.grid(row=4, column=1, sticky="w")
-            
-            # Parse existing expiry date
-            expiry_parts = medicine["expiry_date"].split("-")
-            year_var = tk.StringVar(value=expiry_parts[0])
-            month_var = tk.StringVar(value=expiry_parts[1].lstrip("0"))
-            day_var = tk.StringVar(value=expiry_parts[2].lstrip("0"))
-            
-            ttk.Spinbox(expiry_frame, from_=1, to=31, width=3, textvariable=day_var).pack(side=tk.LEFT)
-            ttk.Label(expiry_frame, text="/").pack(side=tk.LEFT)
-            ttk.Spinbox(expiry_frame, from_=1, to=12, width=3, textvariable=month_var).pack(side=tk.LEFT)
-            ttk.Label(expiry_frame, text="/").pack(side=tk.LEFT)
-            ttk.Spinbox(expiry_frame, from_=2023, to=2050, width=5, textvariable=year_var).pack(side=tk.LEFT)
-            
-            # Reminders section
-            ttk.Label(form_frame, text="Reminder Settings", font=("TkDefaultFont", 12, "bold")).grid(
-                row=5, column=0, columnspan=2, sticky="w", pady=(20, 15))
-            
-            # Reminder frequency
-            ttk.Label(form_frame, text="Frequency:").grid(row=6, column=0, sticky="w", pady=5)
-            frequency_var = tk.StringVar(value=medicine.get("reminder_frequency", "daily"))
-            ttk.Combobox(form_frame, textvariable=frequency_var, 
-                        values=["daily", "weekly", "monthly"]).grid(row=6, column=1, sticky="w")
-            
-            # Times per day
-            ttk.Label(form_frame, text="Times per Day:").grid(row=7, column=0, sticky="w", pady=5)
-            times_var = tk.IntVar(value=medicine.get("times_per_day", 1))
-            ttk.Spinbox(form_frame, from_=1, to=5, width=5, textvariable=times_var).grid(row=7, column=1, sticky="w")
-            
-            # Reminder time
-            ttk.Label(form_frame, text="First Reminder:").grid(row=8, column=0, sticky="w", pady=5)
-            time_frame = ttk.Frame(form_frame)
-            time_frame.grid(row=8, column=1, sticky="w")
-            
-            # Parse existing reminder time
-            reminder_parts = medicine.get("reminder_time", "09:00").split(":")
-            hour_var = tk.StringVar(value=reminder_parts[0].lstrip("0") or "0")
-            minute_var = tk.StringVar(value=reminder_parts[1].lstrip("0") or "0")
-            
-            ttk.Spinbox(time_frame, from_=0, to=23, width=3, textvariable=hour_var).pack(side=tk.LEFT)
-            ttk.Label(time_frame, text=":").pack(side=tk.LEFT)
-            ttk.Spinbox(time_frame, from_=0, to=59, width=3, textvariable=minute_var).pack(side=tk.LEFT)
-            
-            # Notification options
-            ttk.Label(form_frame, text="Notifications", font=("TkDefaultFont", 12, "bold")).grid(
-                row=9, column=0, columnspan=2, sticky="w", pady=(20, 15))
-            
-            # System notifications
-            system_notify_var = tk.BooleanVar(value=medicine.get("system_notify", True))
-            ttk.Checkbutton(form_frame, text="System Notifications", 
-                           variable=system_notify_var).grid(row=10, column=0, sticky="w", pady=5)
-            
-            # Telegram notifications
-            telegram_notify_var = tk.BooleanVar(value=medicine.get("telegram_notify", False))
-            telegram_check = ttk.Checkbutton(form_frame, text="Telegram Notifications", 
-                                             variable=telegram_notify_var)
-            telegram_check.grid(row=10, column=1, sticky="w", pady=5)
-            
-            # Disable Telegram option if not configured
-            if not self.controller.telegram_bot:
-                telegram_check.configure(state="disabled")
-            
-            # Google Calendar sync
-            calendar_sync_var = tk.BooleanVar(value=medicine.get("calendar_sync", False))
-            calendar_check = ttk.Checkbutton(form_frame, text="Add to Google Calendar", 
-                                           variable=calendar_sync_var)
-            calendar_check.grid(row=11, column=0, sticky="w", pady=5)
-            
-            # Disable calendar option if not authenticated
-            if not self.controller.calendar.is_authenticated():
-                calendar_check.configure(state="disabled")
-            
-            # Button frame
-            button_frame = ttk.Frame(form_frame)
-            button_frame.grid(row=12, column=0, columnspan=2, pady=20)
-            
-            ttk.Button(button_frame, text="Cancel", command=dialog.destroy).pack(side=tk.LEFT, padx=5)
-            
-            # Save button with form validation and processing
-            def update_medicine():
-                try:
-                    # Validate inputs
-                    if not name_var.get().strip():
-                        messagebox.showerror("Error", "Medicine name is required")
-                        return
-                    
-                    # Create expiry date string
-                    try:
-                        expiry_date = f"{year_var.get()}-{int(month_var.get()):02d}-{int(day_var.get()):02d}"
-                        datetime.datetime.strptime(expiry_date, "%Y-%m-%d")  # Validate format
-                    except ValueError:
-                        messagebox.showerror("Error", "Invalid expiry date")
-                        return
-                    
-                    # Create reminder time
-                    try:
-                        reminder_time = f"{int(hour_var.get()):02d}:{int(minute_var.get()):02d}"
-                    except ValueError:
-                        messagebox.showerror("Error", "Invalid reminder time")
-                        return
-                    
-                    # Update medicine in database
-                    medicine_data = {
-                        "id": selected_id,
-                        "barcode": barcode_var.get().strip(),
-                        "name": name_var.get().strip(),
-                        "dosage": dosage_var.get().strip(),
-                        "expiry_date": expiry_date,
-                        "reminder_frequency": frequency_var.get(),
-                        "times_per_day": times_var.get(),
-                        "reminder_time": reminder_time,
-                        "system_notify": system_notify_var.get(),
-                        "telegram_notify": telegram_notify_var.get(),
-                        "calendar_sync": calendar_sync_var.get()
-                    }
-                    
-                    self.controller.db.update_medicine(medicine_data)
-                    
-                    # Update in Google Calendar if enabled
-                    if calendar_sync_var.get() and self.controller.calendar.is_authenticated():
-                        self.controller.calendar.update_medicine_reminder(medicine_data)
-                    
-                    # Refresh data
-                    self.load_medicines_data()
-                    self.refresh_dashboard()
-                    self.update_calendar_view()
-                    
-                    dialog.destroy()
-                    messagebox.showinfo("Success", f"Medicine '{name_var.get()}' updated successfully")
-                    
-                except Exception as e:
-                    logger.error(f"Error updating medicine: {e}")
-                    messagebox.showerror("Error", f"Failed to update medicine: {e}")
-            
-            ttk.Button(button_frame, text="Save Changes", command=update_medicine).pack(side=tk.LEFT, padx=5)
-            
-        except Exception as e:
-            logger.error(f"Error editing medicine: {e}")
-            messagebox.showerror("Error", f"Failed to open edit dialog: {e}")
-    
-    def delete_medicine(self):
-        """Delete selected medicine"""
-        selected_id = self.medicines_tree.focus()
-        if not selected_id:
-            messagebox.showinfo("Information", "Please select a medicine to delete")
+        # Add a fresh schedule row
+        self.add_schedule_row()
+        
+    def on_medicine_select(self, event):
+        """
+        Handle medicine selection from the list.
+        
+        Args:
+            event: The selection event
+        """
+        selected_items = self.medicine_tree.selection()
+        if not selected_items:
             return
-        
-        try:
-            # Get medicine name
-            medicine = self.controller.db.get_medicine_by_id(selected_id)
-            if not medicine:
-                messagebox.showerror("Error", "Failed to retrieve medicine details")
-                return
             
-            # Confirm deletion
-            if messagebox.askyesno("Confirm Deletion", 
-                                  f"Are you sure you want to delete '{medicine['name']}'?"):
-                # Delete from database
-                self.controller.db.delete_medicine(selected_id)
-                
-                # Remove from Google Calendar if synced
-                if medicine.get("calendar_sync", False) and self.controller.calendar.is_authenticated():
-                    self.controller.calendar.delete_medicine_reminder(medicine)
-                
-                # Refresh data
-                self.load_medicines_data()
-                self.refresh_dashboard()
-                self.update_calendar_view()
-                
-                messagebox.showinfo("Success", f"Medicine '{medicine['name']}' deleted successfully")
+        # Get the first selected item
+        item_id = selected_items[0]
+        medicine_id = self.medicine_tree.item(item_id, "values")[0]
         
-        except Exception as e:
-            logger.error(f"Error deleting medicine: {e}")
-            messagebox.showerror("Error", f"Failed to delete medicine: {e}")
-    
-    def mark_as_taken(self):
-        """Mark selected medicine as taken"""
-        selected_id = self.medicines_tree.focus()
-        if not selected_id:
-            messagebox.showinfo("Information", "Please select a medicine to mark as taken")
+        # Get medicine details
+        medicine = self.db_manager.get_medicine_by_id(int(medicine_id))
+        if not medicine:
             return
+            
+        # Fill the form
+        self.current_medicine_id = medicine['id']
+        self.medicine_name_var.set(medicine['name'])
+        self.barcode_var.set(medicine.get('barcode', ""))
+        self.dosage_var.set(medicine.get('dosage', ""))
+        self.expiry_date_var.set(medicine.get('expiry_date', ""))
+        self.doses_remaining_var.set(str(medicine.get('doses_remaining', "")))
         
-        try:
-            # Get medicine name
-            medicine = self.controller.db.get_medicine_by_id(selected_id)
-            if not medicine:
-                messagebox.showerror("Error", "Failed to retrieve medicine details")
-                return
+        # Clear notes and set new value
+        self.notes_text.delete(1.0, tk.END)
+        if medicine.get('notes'):
+            self.notes_text.insert(1.0, medicine['notes'])
             
-            # Mark as taken in database
-            self.controller.db.mark_medicine_taken(selected_id)
+        # Clear existing schedule rows
+        for widget in self.schedule_list_frame.winfo_children():
+            widget.destroy()
             
-            # Refresh data
-            self.load_medicines_data()
-            self.refresh_dashboard()
-            
-            messagebox.showinfo("Success", f"'{medicine['name']}' marked as taken")
-            
-            # Update streaks and gamification
-            streak = self.controller.db.get_current_streak()
-            if streak and streak % 5 == 0:  # Milestone streak
-                messagebox.showinfo("Achievement", 
-                                   f"Congratulations! You've maintained a {streak}-day streak!")
-            
-        except Exception as e:
-            logger.error(f"Error marking medicine as taken: {e}")
-            messagebox.showerror("Error", f"Failed to mark medicine as taken: {e}")
-    
-    def toggle_camera(self):
-        """Start or stop the camera for barcode scanning"""
-        if self.camera_active:
-            # Stop camera
-            self.camera_active = False
-            self.start_camera_button.config(text="Start Camera")
-            
-            if self.video_capture:
-                self.video_capture.release()
-                self.video_capture = None
-            
-            # Clear camera display
-            self.camera_label.config(image="")
-            self.scan_status_label.config(text="Status: Camera stopped")
-            
+        # Get schedules for this medicine
+        schedules = self.db_manager.get_schedules_for_medicine(medicine['id'])
+        
+        if schedules:
+            # Add a row for each schedule
+            for schedule in schedules:
+                self.add_schedule_for_medicine(schedule)
         else:
-            # Start camera
-            try:
-                self.video_capture = cv2.VideoCapture(0)
-                if not self.video_capture.isOpened():
-                    raise Exception("Could not open camera")
-                
-                self.camera_active = True
-                self.start_camera_button.config(text="Stop Camera")
-                self.scan_status_label.config(text="Status: Scanning...")
-                
-                # Start scanning thread
-                self.camera_thread = threading.Thread(target=self.scan_barcode_loop)
-                self.camera_thread.daemon = True
-                self.camera_thread.start()
-                
-            except Exception as e:
-                logger.error(f"Error starting camera: {e}")
-                messagebox.showerror("Camera Error", f"Failed to start camera: {e}")
-    
-    def scan_barcode_loop(self):
-        """Loop to continuously scan for barcodes"""
-        last_scan_time = 0
-        last_barcode = None
+            # Add an empty schedule row
+            self.add_schedule_row()
+            
+    def add_schedule_for_medicine(self, schedule):
+        """
+        Add a schedule row with data from the database.
         
-        while self.camera_active and self.video_capture and self.video_capture.isOpened():
+        Args:
+            schedule (dict): Schedule information
+        """
+        # Create a frame for the schedule row
+        row_frame = ttk.Frame(self.schedule_list_frame)
+        row_frame.pack(fill=tk.X, pady=2)
+        
+        # Day of week dropdown
+        day_label = ttk.Label(row_frame, text="Day:", width=5)
+        day_label.pack(side=tk.LEFT, padx=2)
+        
+        day_options = ["Every day", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+        day_combo = ttk.Combobox(
+            row_frame, 
+            values=day_options,
+            width=10
+        )
+        
+        # Set the day based on day_of_week value
+        day_of_week = schedule['day_of_week']
+        if day_of_week == -1:
+            day_combo.current(0)  # "Every day"
+        else:
+            day_combo.current(day_of_week + 1)  # +1 because "Every day" is at index 0
+            
+        day_combo.pack(side=tk.LEFT, padx=2)
+        
+        # Time entry
+        time_label = ttk.Label(row_frame, text="Time:", width=5)
+        time_label.pack(side=tk.LEFT, padx=2)
+        
+        time_entry = ttk.Entry(row_frame, width=10)
+        time_entry.insert(0, schedule['time'])
+        time_entry.pack(side=tk.LEFT, padx=2)
+        
+        # Schedule ID (hidden)
+        row_frame.schedule_id = schedule['id']
+        
+        # Remove button
+        remove_button = ttk.Button(
+            row_frame, 
+            text="X", 
+            width=2,
+            command=lambda: self.remove_schedule(row_frame)
+        )
+        remove_button.pack(side=tk.RIGHT, padx=2)
+        
+    def remove_schedule(self, row_frame):
+        """
+        Remove a schedule row and delete from database if it exists.
+        
+        Args:
+            row_frame: The schedule row frame to remove
+        """
+        # If this schedule has an ID (exists in database), delete it
+        if hasattr(row_frame, 'schedule_id'):
             try:
-                # Read frame
-                ret, frame = self.video_capture.read()
-                if not ret:
-                    continue
+                self.db_manager.delete_schedule(row_frame.schedule_id)
+            except Exception as e:
+                self.logger.error(f"Error deleting schedule: {str(e)}")
+                messagebox.showerror("Error", f"Failed to delete schedule: {str(e)}")
                 
-                # Convert to RGB for display
-                rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        # Remove the frame
+        row_frame.destroy()
+        
+    def save_medicine(self):
+        """Save the medicine data from the form to the database."""
+        # Get values from form
+        name = self.medicine_name_var.get().strip()
+        barcode = self.barcode_var.get().strip() or None
+        dosage = self.dosage_var.get().strip() or None
+        expiry_date = self.expiry_date_var.get().strip() or None
+        
+        # Validate doses_remaining
+        doses_remaining_str = self.doses_remaining_var.get().strip()
+        doses_remaining = None
+        if doses_remaining_str:
+            try:
+                doses_remaining = int(doses_remaining_str)
+                if doses_remaining < 0:
+                    messagebox.showerror("Error", "Doses remaining must be a positive number.")
+                    return
+            except ValueError:
+                messagebox.showerror("Error", "Doses remaining must be a number.")
+                return
+                
+        # Get notes
+        notes = self.notes_text.get(1.0, tk.END).strip() or None
+        
+        # Validate required fields
+        if not name:
+            messagebox.showerror("Error", "Medicine name is required.")
+            return
+            
+        try:
+            # Save or update medicine
+            if self.current_medicine_id is not None:
+                # Update existing medicine
+                success = self.db_manager.update_medicine(
+                    self.current_medicine_id,
+                    name=name,
+                    barcode=barcode,
+                    dosage=dosage,
+                    expiry_date=expiry_date,
+                    doses_remaining=doses_remaining,
+                    notes=notes
+                )
+                
+                if not success:
+                    messagebox.showerror("Error", "Failed to update medicine.")
+                    return
+                    
+                medicine_id = self.current_medicine_id
+            else:
+                # Add new medicine
+                medicine_id = self.db_manager.add_medicine(
+                    name=name,
+                    barcode=barcode,
+                    dosage=dosage,
+                    expiry_date=expiry_date,
+                    doses_remaining=doses_remaining,
+                    notes=notes
+                )
+                
+                if not medicine_id:
+                    messagebox.showerror("Error", "Failed to add medicine.")
+                    return
+                    
+            # Save schedules
+            for schedule_frame in self.schedule_list_frame.winfo_children():
+                try:
+                    # Get the day of week
+                    day_combo = schedule_frame.winfo_children()[1]  # The combobox
+                    day_index = day_combo.current()
+                    
+                    # Convert to database format (-1 for every day, 0-6 for Monday-Sunday)
+                    if day_index == 0:
+                        day_of_week = -1  # Every day
+                    else:
+                        day_of_week = day_index - 1  # 0 = Monday, 6 = Sunday
+                        
+                    # Get the time
+                    time_entry = schedule_frame.winfo_children()[3]  # The time entry
+                    time_str = time_entry.get().strip()
+                    
+                    # Validate time format (HH:MM)
+                    if not time_str or not self.is_valid_time_format(time_str):
+                        messagebox.showerror("Error", "Invalid time format. Use HH:MM.")
+                        return
+                        
+                    # Check if this is an existing schedule or new one
+                    if hasattr(schedule_frame, 'schedule_id'):
+                        # Update existing schedule
+                        self.db_manager.update_schedule(
+                            schedule_frame.schedule_id,
+                            time=time_str,
+                            day_of_week=day_of_week
+                        )
+                    else:
+                        # Add new schedule
+                        self.db_manager.add_schedule(
+                            medicine_id=medicine_id,
+                            time=time_str,
+                            day_of_week=day_of_week
+                        )
+                except Exception as e:
+                    self.logger.error(f"Error saving schedule: {str(e)}")
+                    messagebox.showerror("Error", f"Failed to save schedule: {str(e)}")
+                    continue
+                    
+            # Show success message
+            messagebox.showinfo("Success", "Medicine saved successfully!")
+            
+            # Try to sync with Google services if enabled
+            try:
+                # Google Calendar sync
+                if hasattr(self.calendar_integration, 'sync_thread') and self.calendar_integration.sync_thread:
+                    self.calendar_integration.sync_medicine_schedule()
+                    
+                # Google Sheets sync
+                if hasattr(self.sheets_integration, 'sync_thread') and self.sheets_integration.sync_thread:
+                    self.sheets_integration.export_medicines_to_sheets()
+                    
+            except Exception as e:
+                self.logger.error(f"Error syncing with Google services: {str(e)}")
+                # Don't show error to user, just log it
+                
+            # Refresh the medicine list
+            self.refresh_medicine_list()
+            # Clear the form for next entry
+            self.clear_medicine_form()
+            
+        except Exception as e:
+            self.logger.error(f"Error saving medicine: {str(e)}")
+            messagebox.showerror("Error", f"An error occurred: {str(e)}")
+            
+    def is_valid_time_format(self, time_str):
+        """
+        Validate time string format (HH:MM).
+        
+        Args:
+            time_str (str): Time string to validate
+            
+        Returns:
+            bool: True if valid, False otherwise
+        """
+        try:
+            hours, minutes = map(int, time_str.split(':'))
+            return 0 <= hours < 24 and 0 <= minutes < 60
+        except (ValueError, AttributeError):
+            return False
+            
+    def delete_medicine(self):
+        """Delete the selected medicine from the database."""
+        selected_items = self.medicine_tree.selection()
+        if not selected_items:
+            messagebox.showinfo("Info", "Please select a medicine to delete.")
+            return
+            
+        # Get the first selected item
+        item_id = selected_items[0]
+        medicine_id = self.medicine_tree.item(item_id, "values")[0]
+        medicine_name = self.medicine_tree.item(item_id, "values")[1]
+        
+        # Confirm deletion
+        if not messagebox.askyesno("Confirm Delete", f"Are you sure you want to delete {medicine_name}?"):
+            return
+            
+        try:
+            # Delete the medicine
+            success = self.db_manager.delete_medicine(int(medicine_id))
+            
+            if success:
+                messagebox.showinfo("Success", f"{medicine_name} deleted successfully.")
+                # Refresh the list
+                self.refresh_medicine_list()
+                # Clear the form
+                self.clear_medicine_form()
+            else:
+                messagebox.showerror("Error", "Failed to delete medicine.")
+                
+        except Exception as e:
+            self.logger.error(f"Error deleting medicine: {str(e)}")
+            messagebox.showerror("Error", f"An error occurred: {str(e)}")
+            
+    def refresh_medicine_list(self):
+        """Refresh the medicine list with latest data."""
+        # Clear existing items
+        for item in self.medicine_tree.get_children():
+            self.medicine_tree.delete(item)
+            
+        # Get medicines from database
+        medicines = self.db_manager.get_all_medicines()
+        
+        # Filter if search term is provided
+        search_term = self.search_var.get().strip().lower()
+        if search_term:
+            medicines = [m for m in medicines if search_term in m['name'].lower()]
+            
+        # Add medicines to the treeview
+        for medicine in medicines:
+            self.medicine_tree.insert(
+                "", 
+                tk.END, 
+                values=(
+                    medicine['id'],
+                    medicine['name'],
+                    medicine.get('dosage', ""),
+                    medicine.get('expiry_date', "")
+                )
+            )
+    
+    # ----- Schedule Tab -----
+    
+    def setup_schedule_tab(self):
+        """Set up the schedule tab with calendar view."""
+        # Top frame for date navigation
+        top_frame = ttk.Frame(self.schedule_tab, padding=10)
+        top_frame.pack(fill=tk.X, padx=10, pady=10)
+        
+        # Calendar widget for date selection
+        self.schedule_calendar = Calendar(top_frame, selectmode="day")
+        self.schedule_calendar.pack(side=tk.LEFT, padx=10)
+        
+        # Bind date selection event
+        self.schedule_calendar.bind("<<CalendarSelected>>", self.on_date_selected)
+        
+        # Selected date medicines frame
+        self.date_frame = ttk.LabelFrame(self.schedule_tab, text="Medicines for Selected Date", padding=10)
+        self.date_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        # Scrollable frame for medicines
+        self.schedule_scrollframe = ttk.Frame(self.date_frame)
+        self.schedule_scrollframe.pack(fill=tk.BOTH, expand=True)
+        
+        # Scrollbar
+        self.schedule_scrollbar = ttk.Scrollbar(self.schedule_scrollframe)
+        self.schedule_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # Canvas for scrolling
+        self.schedule_canvas = tk.Canvas(self.schedule_scrollframe)
+        self.schedule_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        # Configure scrollbar
+        self.schedule_scrollbar.configure(command=self.schedule_canvas.yview)
+        self.schedule_canvas.configure(yscrollcommand=self.schedule_scrollbar.set)
+        
+        # Bind scroll event
+        self.schedule_canvas.bind('<Configure>', 
+            lambda e: self.schedule_canvas.configure(scrollregion=self.schedule_canvas.bbox('all')))
+        
+        # Create a frame inside the canvas for medicines
+        self.schedule_medicines_frame = ttk.Frame(self.schedule_canvas)
+        self.schedule_canvas.create_window((0, 0), window=self.schedule_medicines_frame, anchor=tk.NW)
+        
+    def on_date_selected(self, event):
+        """
+        Handle date selection in the schedule calendar.
+        
+        Args:
+            event: The selection event
+        """
+        self.refresh_schedule_tab()
+        
+    def refresh_schedule_tab(self):
+        """Refresh the schedule tab with medicines for selected date."""
+        # Clear existing medicines
+        for widget in self.schedule_medicines_frame.winfo_children():
+            widget.destroy()
+            
+        # Get selected date
+        selected_date = self.schedule_calendar.get_date()
+        
+        # Update frame title
+        self.date_frame.configure(text=f"Medicines for {selected_date}")
+        
+        # Convert date to DB format (YYYY-MM-DD)
+        try:
+            date_obj = datetime.datetime.strptime(selected_date, "%m/%d/%y")
+            db_date = date_obj.strftime("%Y-%m-%d")
+        except ValueError:
+            # Try alternative format
+            try:
+                date_obj = datetime.datetime.strptime(selected_date, "%Y-%m-%d")
+                db_date = selected_date
+            except ValueError:
+                messagebox.showerror("Error", "Invalid date format.")
+                return
+                
+        # Get medicines for selected date
+        medicines = self.db_manager.get_medicines_for_date(db_date)
+        
+        if not medicines:
+            no_meds_label = ttk.Label(
+                self.schedule_medicines_frame, 
+                text="No medicines scheduled for this date.", 
+                font=("Arial", 12),
+                padding=20
+            )
+            no_meds_label.pack(pady=20)
+            return
+            
+        # Sort medicines by time
+        medicines.sort(key=lambda x: x['time'])
+        
+        # Group medicines by time
+        by_time = {}
+        for med in medicines:
+            time_str = med['time']
+            if time_str not in by_time:
+                by_time[time_str] = []
+            by_time[time_str].append(med)
+            
+        # Create a frame for each time
+        for time_str, meds in by_time.items():
+            # Time frame
+            time_frame = ttk.LabelFrame(
+                self.schedule_medicines_frame, 
+                text=f"Time: {time_str}", 
+                padding=10
+            )
+            time_frame.pack(fill=tk.X, pady=5, padx=5)
+            
+            # Add each medicine
+            for med in meds:
+                med_frame = ttk.Frame(time_frame, padding=5)
+                med_frame.pack(fill=tk.X, pady=2)
+                
+                # Medicine name and dosage
+                med_label = ttk.Label(
+                    med_frame, 
+                    text=f"{med['name']} - {med['dosage'] if 'dosage' in med else 'No dosage specified'}", 
+                    font=("Arial", 12)
+                )
+                med_label.pack(side=tk.LEFT, padx=5)
+                
+                # Edit button
+                edit_button = ttk.Button(
+                    med_frame, 
+                    text="Edit", 
+                    command=lambda m=med: self.edit_medicine_from_schedule(m)
+                )
+                edit_button.pack(side=tk.RIGHT, padx=5)
+                
+                # Add a separator
+                separator = ttk.Separator(time_frame, orient=tk.HORIZONTAL)
+                separator.pack(fill=tk.X, pady=5)
+                
+        # Update the canvas
+        self.schedule_canvas.update_idletasks()
+        self.schedule_canvas.configure(scrollregion=self.schedule_canvas.bbox('all'))
+        
+    def edit_medicine_from_schedule(self, medicine):
+        """
+        Switch to the medicines tab to edit the selected medicine.
+        
+        Args:
+            medicine (dict): The medicine to edit
+        """
+        # Switch to medicines tab
+        self.tab_control.select(self.medicines_tab)
+        
+        # Find and select the medicine in the treeview
+        for item in self.medicine_tree.get_children():
+            if self.medicine_tree.item(item, "values")[0] == str(medicine['id']):
+                self.medicine_tree.selection_set(item)
+                self.medicine_tree.focus(item)
+                
+                # Trigger the selection event
+                self.on_medicine_select(None)
+                break
+    
+    # ----- Scan Tab -----
+    
+    def setup_scan_tab(self):
+        """Set up the scan tab with camera view and controls."""
+        # Top frame for instructions
+        instr_frame = ttk.Frame(self.scan_tab, padding=10)
+        instr_frame.pack(fill=tk.X, padx=10, pady=10)
+        
+        # Instructions
+        instructions = ttk.Label(
+            instr_frame, 
+            text="Position the barcode in front of the camera and keep it steady.",
+            font=("Arial", 12),
+            padding=10
+        )
+        instructions.pack()
+        
+        # Frame for camera view
+        self.camera_frame = ttk.LabelFrame(self.scan_tab, text="Camera View", padding=10)
+        self.camera_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        # Camera feed label (will be updated with camera frames)
+        self.camera_label = ttk.Label(self.camera_frame)
+        self.camera_label.pack(fill=tk.BOTH, expand=True)
+        
+        # Status frame
+        status_frame = ttk.Frame(self.scan_tab, padding=10)
+        status_frame.pack(fill=tk.X, padx=10, pady=10)
+        
+        # Status label
+        self.scan_status_label = ttk.Label(
+            status_frame, 
+            text="Ready to scan", 
+            font=("Arial", 12)
+        )
+        self.scan_status_label.pack(side=tk.LEFT, padx=10)
+        
+        # Buttons frame
+        button_frame = ttk.Frame(self.scan_tab, padding=10)
+        button_frame.pack(fill=tk.X, padx=10, pady=10)
+        
+        # Start/stop camera button
+        self.camera_button = ttk.Button(
+            button_frame, 
+            text="Start Camera", 
+            command=self.toggle_camera
+        )
+        self.camera_button.pack(side=tk.LEFT, padx=10)
+        
+        # Load image button
+        self.load_image_button = ttk.Button(
+            button_frame, 
+            text="Scan from Image", 
+            command=self.scan_from_image
+        )
+        self.load_image_button.pack(side=tk.LEFT, padx=10)
+        
+        # Cancel button
+        self.cancel_button = ttk.Button(
+            button_frame, 
+            text="Cancel", 
+            command=lambda: self.tab_control.select(self.medicines_tab)
+        )
+        self.cancel_button.pack(side=tk.RIGHT, padx=10)
+        
+    def prepare_camera(self):
+        """Prepare the camera for scanning."""
+        if not self.camera_active:
+            self.toggle_camera()
+            
+    def toggle_camera(self):
+        """Toggle the camera on/off."""
+        if self.camera_active:
+            self.stop_camera()
+            self.camera_button.config(text="Start Camera")
+        else:
+            self.start_camera()
+            self.camera_button.config(text="Stop Camera")
+            
+    def start_camera(self):
+        """Start the camera and scanning thread."""
+        try:
+            self.cap = cv2.VideoCapture(0)
+            if not self.cap.isOpened():
+                messagebox.showerror("Error", "Failed to open camera.")
+                return
+                
+            self.camera_active = True
+            self.stop_camera_flag.clear()
+            
+            # Start the camera thread
+            self.camera_thread = threading.Thread(target=self.update_camera)
+            self.camera_thread.daemon = True
+            self.camera_thread.start()
+            
+            self.scan_status_label.config(text="Scanning for barcode...")
+            
+        except Exception as e:
+            self.logger.error(f"Error starting camera: {str(e)}")
+            messagebox.showerror("Error", f"Failed to start camera: {str(e)}")
+            
+    def stop_camera(self):
+        """Stop the camera and scanning thread."""
+        self.stop_camera_flag.set()
+        
+        if self.camera_thread:
+            self.camera_thread.join(timeout=1.0)
+            self.camera_thread = None
+            
+        if self.cap and self.cap.isOpened():
+            self.cap.release()
+            self.cap = None
+            
+        self.camera_active = False
+        
+        # Reset the camera label
+        self.camera_label.config(image="")
+        self.scan_status_label.config(text="Camera stopped")
+        
+    def update_camera(self):
+        """Update the camera feed and scan for barcodes."""
+        from pyzbar.pyzbar import decode
+        
+        while self.camera_active and not self.stop_camera_flag.is_set():
+            try:
+                ret, frame = self.cap.read()
+                if not ret:
+                    self.logger.error("Failed to capture frame")
+                    break
+                    
+                # Mirror the frame
+                frame = cv2.flip(frame, 1)
+                
+                # Convert to grayscale for barcode detection
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
                 
                 # Scan for barcodes
-                current_time = time.time()
-                if current_time - last_scan_time > 0.5:  # Scan every 0.5 seconds
-                    last_scan_time = current_time
-                    barcodes = self.controller.scanner.scan_image(rgb_frame)
-                    
-                    # If barcode found and it's new
-                    if barcodes and barcodes[0] != last_barcode:
-                        last_barcode = barcodes[0]
+                decoded_objects = decode(gray)
+                
+                for obj in decoded_objects:
+                    # Draw rectangle around barcode
+                    points = obj.polygon
+                    if len(points) > 4:
+                        hull = cv2.convexHull(np.array([point for point in points], dtype=np.float32))
+                        cv2.polylines(frame, [hull], True, (0, 255, 0), 2)
+                    else:
+                        pts = np.array([point for point in points], dtype=np.int32)
+                        cv2.polylines(frame, [pts], True, (0, 255, 0), 2)
                         
-                        # Update UI from main thread
-                        self.root.after(0, self.process_scanned_barcode, last_barcode)
+                    # Get barcode data
+                    barcode_data = obj.data.decode('utf-8')
+                    barcode_type = obj.type
+                    
+                    # Display barcode info on frame
+                    cv2.putText(frame, f"{barcode_type}: {barcode_data}", (obj.rect.left, obj.rect.top - 10),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                                
+                    # Handle barcode detection
+                    self.root.after(0, lambda d=barcode_data, t=barcode_type: self.on_barcode_detected(d, t))
+                    
+                    # Pause for a moment to avoid multiple detections
+                    time.sleep(1.0)
+                    
+                # Convert frame to a format tkinter can display
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                img = Image.fromarray(frame_rgb)
+                imgtk = ImageTk.PhotoImage(image=img)
                 
-                # Display the frame
-                img = Image.fromarray(rgb_frame)
-                img = img.resize((640, 480))
-                img_tk = ImageTk.PhotoImage(image=img)
+                # Update the label
+                self.camera_label.imgtk = imgtk
+                self.camera_label.config(image=imgtk)
                 
-                # Update label (must keep a reference to image)
-                self.camera_label.img_tk = img_tk
-                self.camera_label.config(image=img_tk)
-                
-                # Sleep briefly to reduce CPU usage
+                # Short sleep to reduce CPU usage
                 time.sleep(0.03)
                 
             except Exception as e:
-                logger.error(f"Error in scanning loop: {e}")
-                self.root.after(0, lambda: self.scan_status_label.config(
-                    text=f"Scanning error: {e}"))
+                self.logger.error(f"Error in camera update: {str(e)}")
                 break
-        
+                
         # Clean up
-        if self.video_capture:
-            self.video_capture.release()
-            self.video_capture = None
-    
-    def process_scanned_barcode(self, barcode):
-        """Process a scanned barcode"""
-        # Update status
-        self.barcode_result_label.config(text=f"Barcode: {barcode}")
+        if self.cap and self.cap.isOpened():
+            self.cap.release()
+            
+        self.camera_active = False
         
-        # Check if medicine already exists
-        medicine = self.controller.db.get_medicine_by_barcode(barcode)
+    def on_barcode_detected(self, barcode_data, barcode_type):
+        """
+        Handle detected barcode data.
+        
+        Args:
+            barcode_data (str): The barcode data
+            barcode_type (str): The barcode type
+        """
+        self.scan_status_label.config(text=f"Detected: {barcode_type} - {barcode_data}")
+        
+        # Set the barcode value in the medicines form
+        self.barcode_var.set(barcode_data)
+        
+        # Check if this barcode exists in the database
+        medicine = self.db_manager.get_medicine_by_barcode(barcode_data)
         
         if medicine:
-            self.scan_status_label.config(text=f"Found: {medicine['name']}")
-            
-            # Show medicine details
-            messagebox.showinfo("Medicine Found", 
-                               f"Name: {medicine['name']}\n"
-                               f"Dosage: {medicine['dosage']}\n"
-                               f"Expiry: {medicine['expiry_date']}")
+            if messagebox.askyesno("Barcode Found", 
+                                  f"This barcode belongs to {medicine['name']}. Do you want to edit it?"):
+                # Stop the camera
+                self.stop_camera()
+                
+                # Switch to the medicines tab
+                self.tab_control.select(self.medicines_tab)
+                
+                # Find and select the medicine in the treeview
+                for item in self.medicine_tree.get_children():
+                    if self.medicine_tree.item(item, "values")[0] == str(medicine['id']):
+                        self.medicine_tree.selection_set(item)
+                        self.medicine_tree.focus(item)
+                        
+                        # Trigger the selection event
+                        self.on_medicine_select(None)
+                        break
         else:
-            self.scan_status_label.config(text="New medicine detected")
-            
-            # Look up medicine details (mock function)
-            if messagebox.askyesno("New Medicine", 
-                                  f"Barcode {barcode} not found in database. Add new medicine?"):
-                # Pre-fill barcode in add form
-                self.toggle_camera()  # Stop camera first
+            if messagebox.askyesno("New Barcode", 
+                                  "This barcode is not in the database. Do you want to add a new medicine?"):
+                # Stop the camera
+                self.stop_camera()
                 
-                # Open add form with barcode pre-filled
-                dialog = tk.Toplevel(self.root)
-                dialog.title("Add New Medicine")
-                dialog.geometry("500x550")
-                dialog.transient(self.root)
-                dialog.grab_set()
+                # Switch to the medicines tab
+                self.tab_control.select(self.medicines_tab)
                 
-                # Create form (simplified version of add_medicine_dialog)
-                form_frame = ttk.Frame(dialog, padding=20)
-                form_frame.pack(fill=tk.BOTH, expand=True)
+                # Clear the form but keep the barcode
+                self.clear_medicine_form()
+                self.barcode_var.set(barcode_data)
                 
-                # Barcode (pre-filled)
-                ttk.Label(form_frame, text="Barcode:").grid(row=0, column=0, sticky="w", pady=5)
-                barcode_var = tk.StringVar(value=barcode)
-                ttk.Entry(form_frame, textvariable=barcode_var, width=30, state="readonly").grid(
-                    row=0, column=1, sticky="w")
-                
-                # Rest of form would be added here...
-                # (Using the same form as in add_medicine_dialog)
-    
-    def load_barcode_image(self):
-        """Load barcode from an image file"""
+    def scan_from_image(self):
+        """Scan a barcode from an image file."""
+        from pyzbar.pyzbar import decode
+        
+        # Open file dialog to select an image
         file_path = filedialog.askopenfilename(
-            title="Select Barcode Image",
-            filetypes=[("Image files", "*.jpg *.jpeg *.png *.bmp")]
+            title="Select Image with Barcode",
+            filetypes=[("Image files", "*.png;*.jpg;*.jpeg;*.bmp")]
         )
         
         if not file_path:
             return
-        
+            
         try:
-            # Load and scan image
+            # Load the image
             image = cv2.imread(file_path)
             if image is None:
-                raise Exception("Failed to load image")
-            
-            # Convert to RGB
-            rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-            
-            # Scan for barcodes
-            barcodes = self.controller.scanner.scan_image(rgb_image)
-            
-            if not barcodes:
-                messagebox.showinfo("Scan Result", "No barcode found in the image")
+                messagebox.showerror("Error", "Failed to load image.")
                 return
-            
-            # Process the first barcode found
-            self.process_scanned_barcode(barcodes[0])
-            
-            # Display the image
-            img = Image.fromarray(rgb_image)
-            img = img.resize((640, 480), Image.LANCZOS)
-            img_tk = ImageTk.PhotoImage(image=img)
-            
-            # Update label
-            self.camera_label.img_tk = img_tk
-            self.camera_label.config(image=img_tk)
-            
-        except Exception as e:
-            logger.error(f"Error loading barcode image: {e}")
-            messagebox.showerror("Error", f"Failed to process image: {e}")
-    
-    def update_calendar_view(self):
-        """Update the calendar view with medicine schedules"""
-        try:
-            # Clear previous calendar data
-            for cell in self.calendar_cells:
-                for widget in cell.winfo_children():
-                    widget.destroy()
-            
-            # Update date label
-            self.date_label.config(text=f"{calendar.month_name[self.current_month]} {self.current_year}")
-            
-            # Get first day of month and number of days
-            first_day = datetime.datetime(self.current_year, self.current_month, 1)
-            _, num_days = calendar.monthrange(self.current_year, self.current_month)
-            
-            # Calculate day offset (0 = Monday in our grid)
-            first_weekday = first_day.weekday()  # 0 = Monday, 6 = Sunday
-            
-            # Get medicine schedule for this month
-            month_schedule = self.controller.db.get_month_schedule(
-                self.current_year, self.current_month)
-            
-            # Fill in the calendar
-            for i in range(42):  # 6 rows * 7 columns
-                cell_index = i % 42
-                day = i - first_weekday + 1
                 
-                if 1 <= day <= num_days:
-                    # Set the date number
-                    self.calendar_dates[cell_index].config(text=str(day))
-                    
-                    # Check if current date
-                    now = datetime.datetime.now()
-                    if (day == now.day and self.current_month == now.month and 
-                        self.current_year == now.year):
-                        self.calendar_dates[cell_index].config(
-                            foreground="white", 
-                            background="#4a86e8",
-                            font=("TkDefaultFont", 10, "bold")
-                        )
-                    else:
-                        self.calendar_dates[cell_index].config(
-                            foreground="black", 
-                            background="",
-                            font=("TkDefaultFont", 10, "normal")
-                        )
-                    
-                    # Add medicine reminders for this day
-                    date_str = f"{self.current_year}-{self.current_month:02d}-{day:02d}"
-                    if date_str in month_schedule:
-                        medicines = month_schedule[date_str]
-                        self._add_medicines_to_cell(self.calendar_cells[cell_index], medicines, day)
-                else:
-                    # Clear cell for days outside current month
-                    self.calendar_dates[cell_index].config(text="")
+            # Decode barcodes
+            decoded_objects = decode(image)
             
-        except Exception as e:
-            logger.error(f"Error updating calendar: {e}")
-            messagebox.showerror("Error", f"Failed to update calendar: {e}")
-    
-    def _add_medicines_to_cell(self, cell, medicines, day):
-        """Add medicine indicators to a calendar cell"""
-        if not medicines:
-            return
-        
-        # Create a canvas for medicine indicators
-        canvas = tk.Canvas(cell, height=60, bg="white", highlightthickness=0)
-        canvas.pack(fill=tk.BOTH, expand=True)
-        
-        # Add medicine indicators (limited to first 3)
-        y_pos = 5
-        for i, medicine in enumerate(medicines[:3]):
-            # Draw a colored pill icon
-            color = ["#4a86e8", "#e67c73", "#f6bf26", "#33a853"][i % 4]
-            canvas.create_rectangle(5, y_pos, 15, y_pos+10, fill=color, outline="")
-            canvas.create_text(20, y_pos+5, text=medicine["name"], anchor="w")
-            y_pos += 15
-        
-        # Indicate if there are more medicines
-        if len(medicines) > 3:
-            canvas.create_text(5, y_pos+5, text=f"+ {len(medicines)-3} more...", anchor="w")
-        
-        # Make the cell clickable to show details
-        canvas.bind("<Button-1>", lambda e, d=day: self.show_day_schedule(d))
-        
-    def show_day_schedule(self, day):
-        """Show the medicine schedule for a selected day"""
-        try:
-            # Clear previous day schedule
-            for widget in self.daily_reminders_frame.winfo_children():
-                widget.destroy()
-            
-            # Format date
-            selected_date = datetime.datetime(self.current_year, self.current_month, day)
-            formatted_date = selected_date.strftime("%A, %B %d, %Y")
-            self.selected_date_label.config(text=formatted_date)
-            
-            # Get medicines for this day
-            date_str = f"{self.current_year}-{self.current_month:02d}-{day:02d}"
-            medicines = self.controller.db.get_day_schedule(date_str)
-            
-            if not medicines:
-                ttk.Label(self.daily_reminders_frame, 
-                          text="No medicines scheduled for this day").pack(pady=10)
+            if not decoded_objects:
+                messagebox.showinfo("No Barcode", "No barcode found in the image.")
                 return
+                
+            # Get the first barcode
+            barcode = decoded_objects[0]
+            barcode_data = barcode.data.decode('utf-8')
+            barcode_type = barcode.type
             
-            # Sort by time
-            medicines.sort(key=lambda m: m.get("reminder_time", "00:00"))
-            
-            # Create a list of medicines
-            for medicine in medicines:
-                med_frame = ttk.Frame(self.daily_reminders_frame)
-                med_frame.pack(fill=tk.X, pady=5)
-                
-                time_str = medicine.get("reminder_time", "")
-                name_str = medicine.get("name", "Unknown")
-                dosage_str = medicine.get("dosage", "")
-                
-                ttk.Label(med_frame, text=time_str, width=10).pack(side=tk.LEFT)
-                ttk.Label(med_frame, text=name_str, width=20).pack(side=tk.LEFT, padx=5)
-                ttk.Label(med_frame, text=dosage_str).pack(side=tk.LEFT, padx=5)
-                
-                # Add buttons
-                ttk.Button(med_frame, text="Edit", 
-                          command=lambda id=medicine.get("id"): self.edit_scheduled_medicine(id)).pack(
-                    side=tk.RIGHT, padx=2)
-                
-                # Check if it's today
-                now = datetime.datetime.now()
-                if (day == now.day and self.current_month == now.month and 
-                    self.current_year == now.year):
-                    ttk.Button(med_frame, text="Take", 
-                              command=lambda id=medicine.get("id"): self.mark_medicine_taken(id)).pack(
-                        side=tk.RIGHT, padx=2)
+            # Call the handler with the detected barcode
+            self.on_barcode_detected(barcode_data, barcode_type)
             
         except Exception as e:
-            logger.error(f"Error showing day schedule: {e}")
-            messagebox.showerror("Error", f"Failed to show schedule: {e}")
+            self.logger.error(f"Error scanning image: {str(e)}")
+            messagebox.showerror("Error", f"Failed to scan image: {str(e)}")
     
-    def edit_scheduled_medicine(self, medicine_id):
-        """Edit a medicine from the schedule view"""
-        # Redirect to the main edit function with the ID
-        self.medicines_tree.selection_set(medicine_id)
-        self.medicines_tree.focus(medicine_id)
-        self.notebook.select(self.medicines_tab)
-        self.edit_medicine_dialog()
+    # ----- Pharmacy Tab -----
     
-    def mark_medicine_taken(self, medicine_id):
-        """Mark a medicine as taken from the schedule view"""
-        try:
-            # Mark as taken in database
-            self.controller.db.mark_medicine_taken(medicine_id)
-            
-            # Refresh views
-            self.refresh_dashboard()
-            self.update_calendar_view()
-            
-            # Show current day schedule again
-            self.show_day_schedule(datetime.datetime.now().day)
-            
-            messagebox.showinfo("Success", "Medicine marked as taken")
-            
-        except Exception as e:
-            logger.error(f"Error marking medicine as taken: {e}")
-            messagebox.showerror("Error", f"Failed to mark medicine as taken: {e}")
-    
-    def change_month(self, offset):
-        """Change the displayed month by the given offset"""
-        month = self.current_month + offset
-        year = self.current_year
-        
-        if month < 1:
-            month = 12
-            year -= 1
-        elif month > 12:
-            month = 1
-            year += 1
-            
-        self.current_month = month
-        self.current_year = year
-        self.update_calendar_view()
-    
-    def go_to_today(self):
-        """Reset calendar to current month"""
-        now = datetime.datetime.now()
-        self.current_month = now.month
-        self.current_year = now.year
-        self.update_calendar_view()
-        
-        # Show today's schedule
-        self.show_day_schedule(now.day)
-    
-    def find_pharmacies(self):
-        """Open pharmacy locator dialog"""
-        dialog = tk.Toplevel(self.root)
-        dialog.title("Nearby Pharmacy Locator")
-        dialog.geometry("600x500")
-        dialog.transient(self.root)
-        dialog.grab_set()
-        
-        # Main frame
-        main_frame = ttk.Frame(dialog, padding=20)
-        main_frame.pack(fill=tk.BOTH, expand=True)
-        
-        ttk.Label(main_frame, text="Find Nearby Pharmacies", 
-                 font=("TkDefaultFont", 14, "bold")).pack(pady=(0, 20))
+    def setup_pharmacy_tab(self):
+        """Set up the pharmacy finder tab."""
+        # Top frame for search options
+        search_frame = ttk.Frame(self.pharmacy_tab, padding=10)
+        search_frame.pack(fill=tk.X, padx=10, pady=10)
         
         # Location input
-        location_frame = ttk.Frame(main_frame)
-        location_frame.pack(fill=tk.X, pady=10)
+        location_label = ttk.Label(search_frame, text="Location:", width=10)
+        location_label.pack(side=tk.LEFT, padx=5)
         
-        ttk.Label(location_frame, text="Your Location:").grid(row=0, column=0, padx=5, pady=5)
+        location_entry = ttk.Entry(search_frame, textvariable=self.location_var, width=40)
+        location_entry.pack(side=tk.LEFT, padx=5)
         
-        # Latitude and longitude inputs
-        lat_var = tk.StringVar()
-        lon_var = tk.StringVar()
+        # Radius input
+        radius_label = ttk.Label(search_frame, text="Radius (km):", width=12)
+        radius_label.pack(side=tk.LEFT, padx=5)
         
-        ttk.Label(location_frame, text="Latitude:").grid(row=0, column=1, padx=5, pady=5)
-        ttk.Entry(location_frame, textvariable=lat_var, width=10).grid(row=0, column=2, padx=5, pady=5)
-        
-        ttk.Label(location_frame, text="Longitude:").grid(row=0, column=3, padx=5, pady=5)
-        ttk.Entry(location_frame, textvariable=lon_var, width=10).grid(row=0, column=4, padx=5, pady=5)
-        
-        # Radius selection
-        radius_frame = ttk.Frame(main_frame)
-        radius_frame.pack(fill=tk.X, pady=10)
-        
-        ttk.Label(radius_frame, text="Search Radius (meters):").pack(side=tk.LEFT, padx=5)
-        
-        radius_var = tk.StringVar(value="5000")
-        ttk.Combobox(radius_frame, textvariable=radius_var, 
-                    values=["1000", "2000", "5000", "10000"]).pack(side=tk.LEFT, padx=5)
-        
-        # Results area
-        results_frame = ttk.LabelFrame(main_frame, text="Pharmacies")
-        results_frame.pack(fill=tk.BOTH, expand=True, pady=10)
-        
-        # Results list
-        self.pharmacy_tree = ttk.Treeview(
-            results_frame, 
-            columns=("Name", "Distance", "Coordinates"),
-            show="headings",
-            height=10
-        )
-        
-        self.pharmacy_tree.heading("Name", text="Pharmacy Name")
-        self.pharmacy_tree.heading("Distance", text="Distance")
-        self.pharmacy_tree.heading("Coordinates", text="Coordinates")
-        
-        self.pharmacy_tree.column("Name", width=200)
-        self.pharmacy_tree.column("Distance", width=100)
-        self.pharmacy_tree.column("Coordinates", width=200)
-        
-        self.pharmacy_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        
-        # Add scrollbar
-        scrollbar = ttk.Scrollbar(results_frame, orient=tk.VERTICAL, command=self.pharmacy_tree.yview)
-        self.pharmacy_tree.configure(yscrollcommand=scrollbar.set)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        
-        # Status label
-        self.pharmacy_status_label = ttk.Label(main_frame, text="")
-        self.pharmacy_status_label.pack(fill=tk.X, pady=5)
-        
-        # Button frame
-        button_frame = ttk.Frame(main_frame)
-        button_frame.pack(fill=tk.X, pady=10)
-        
-        # Use current location button
-        def use_current_location():
-            # This would use geolocation in a real application
-            # For demo, use a default location
-            lat_var.set("37.7749")
-            lon_var.set("-122.4194")
-            messagebox.showinfo("Location", "Using demo location (San Francisco)")
-        
-        ttk.Button(button_frame, text="Use Current Location", 
-                  command=use_current_location).pack(side=tk.LEFT, padx=5)
+        radius_entry = ttk.Entry(search_frame, textvariable=self.radius_var, width=5)
+        radius_entry.pack(side=tk.LEFT, padx=5)
         
         # Search button
-        def search_pharmacies():
-            try:
-                # Validate inputs
-                try:
-                    lat = float(lat_var.get())
-                    lon = float(lon_var.get())
-                    radius = int(radius_var.get())
-                except ValueError:
-                    raise ValueError("Please enter valid latitude, longitude, and radius")
-                
-                # Clear previous results
-                for item in self.pharmacy_tree.get_children():
-                    self.pharmacy_tree.delete(item)
-                
-                # Update status
-                self.pharmacy_status_label.config(text="Searching for pharmacies...")
-                
-                # Search for pharmacies
-                pharmacies = self.controller.pharmacy_locator.find_nearby_pharmacies(lat, lon, radius)
-                
-                if not pharmacies:
-                    self.pharmacy_status_label.config(text="No pharmacies found nearby.")
-                    return
-                
-                # Add results to tree
-                for i, pharmacy in enumerate(pharmacies):
-                    # Calculate rough distance (simplified)
-                    p_lat = pharmacy["lat"]
-                    p_lon = pharmacy["lon"]
-                    distance = self.controller.pharmacy_locator.calculate_distance(
-                        lat, lon, p_lat, p_lon)
-                    
-                    self.pharmacy_tree.insert(
-                        "", "end", 
-                        values=(
-                            pharmacy["name"],
-                            f"{distance:.1f} km",
-                            f"{p_lat:.6f}, {p_lon:.6f}"
-                        ),
-                        iid=i
-                    )
-                
-                self.pharmacy_status_label.config(
-                    text=f"Found {len(pharmacies)} pharmacies within {radius/1000:.1f} km")
-                
-            except Exception as e:
-                logger.error(f"Error searching pharmacies: {e}")
-                self.pharmacy_status_label.config(text=f"Error: {e}")
+        search_button = ttk.Button(
+            search_frame, 
+            text="Find Pharmacies", 
+            command=self.find_pharmacies
+        )
+        search_button.pack(side=tk.LEFT, padx=10)
         
-        ttk.Button(button_frame, text="Search", command=search_pharmacies).pack(side=tk.LEFT, padx=5)
-        ttk.Button(button_frame, text="Close", command=dialog.destroy).pack(side=tk.RIGHT, padx=5)
+        # Results frame
+        results_frame = ttk.LabelFrame(self.pharmacy_tab, text="Nearby Pharmacies", padding=10)
+        results_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        # Scrollable frame for results
+        self.pharmacy_scrollframe = ttk.Frame(results_frame)
+        self.pharmacy_scrollframe.pack(fill=tk.BOTH, expand=True)
+        
+        # Scrollbar
+        self.pharmacy_scrollbar = ttk.Scrollbar(self.pharmacy_scrollframe)
+        self.pharmacy_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # Canvas for scrolling
+        self.pharmacy_canvas = tk.Canvas(self.pharmacy_scrollframe)
+        self.pharmacy_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        # Configure scrollbar
+        self.pharmacy_scrollbar.configure(command=self.pharmacy_canvas.yview)
+        self.pharmacy_canvas.configure(yscrollcommand=self.pharmacy_scrollbar.set)
+        
+        # Bind scroll event
+        self.pharmacy_canvas.bind('<Configure>', 
+            lambda e: self.pharmacy_canvas.configure(scrollregion=self.pharmacy_canvas.bbox('all')))
+        
+        # Create a frame inside the canvas for pharmacies
+        self.pharmacy_results_frame = ttk.Frame(self.pharmacy_canvas)
+        self.pharmacy_canvas.create_window((0, 0), window=self.pharmacy_results_frame, anchor=tk.NW)
+        
+        # Initial message
+        self.pharmacy_status = ttk.Label(
+            self.pharmacy_results_frame, 
+            text="Enter a location to find nearby pharmacies.",
+            font=("Arial", 12),
+            padding=20
+        )
+        self.pharmacy_status.pack(pady=20)
+        
+    def find_pharmacies(self):
+        """Find pharmacies near the specified location."""
+        # Clear existing results
+        for widget in self.pharmacy_results_frame.winfo_children():
+            widget.destroy()
+            
+        # Get location and radius
+        location = self.location_var.get().strip()
+        radius_str = self.radius_var.get().strip()
+        
+        if not location:
+            messagebox.showerror("Error", "Please enter a location.")
+            return
+            
+        try:
+            radius = float(radius_str)
+            if radius <= 0:
+                messagebox.showerror("Error", "Radius must be a positive number.")
+                return
+        except ValueError:
+            messagebox.showerror("Error", "Radius must be a number.")
+            return
+            
+        # Update status
+        self.pharmacy_status = ttk.Label(
+            self.pharmacy_results_frame, 
+            text=f"Searching for pharmacies near {location}...",
+            font=("Arial", 12),
+            padding=20
+        )
+        self.pharmacy_status.pack(pady=20)
+        self.pharmacy_canvas.update()
+        
+        # Start search in a separate thread to avoid freezing UI
+        search_thread = threading.Thread(
+            target=self.search_pharmacies_thread,
+            args=(location, radius * 1000)  # Convert km to meters
+        )
+        search_thread.daemon = True
+        search_thread.start()
+        
+    def search_pharmacies_thread(self, location, radius):
+        """
+        Thread function to search for pharmacies.
+        
+        Args:
+            location (str): Location to search near
+            radius (float): Search radius in meters
+        """
+        try:
+            # Find pharmacies
+            pharmacies = self.pharmacy_locator.find_pharmacies_by_address(location, radius)
+            
+            # Update UI in the main thread
+            self.root.after(0, lambda: self.display_pharmacy_results(pharmacies))
+            
+        except Exception as e:
+            self.logger.error(f"Error searching for pharmacies: {str(e)}")
+            self.root.after(0, lambda: self.display_pharmacy_error(str(e)))
+            
+    def display_pharmacy_results(self, pharmacies):
+        """
+        Display the pharmacy search results.
+        
+        Args:
+            pharmacies (list): List of pharmacy dictionaries
+        """
+        # Clear existing results
+        for widget in self.pharmacy_results_frame.winfo_children():
+            widget.destroy()
+            
+        if not pharmacies:
+            self.pharmacy_status = ttk.Label(
+                self.pharmacy_results_frame, 
+                text="No pharmacies found in this area.",
+                font=("Arial", 12),
+                padding=20
+            )
+            self.pharmacy_status.pack(pady=20)
+            return
+            
+        # Results count
+        results_label = ttk.Label(
+            self.pharmacy_results_frame, 
+            text=f"Found {len(pharmacies)} pharmacies",
+            font=("Arial", 12, "bold"),
+            padding=10
+        )
+        results_label.pack(fill=tk.X, pady=5)
+        
+        # Display each pharmacy
+        for i, pharmacy in enumerate(pharmacies):
+            # Create a frame for each pharmacy
+            pharm_frame = ttk.Frame(self.pharmacy_results_frame, padding=10)
+            pharm_frame.pack(fill=tk.X, pady=5, padx=5)
+            
+            # Name (with number)
+            name_label = ttk.Label(
+                pharm_frame, 
+                text=f"{i+1}. {pharmacy['name']}",
+                font=("Arial", 12, "bold")
+            )
+            name_label.pack(anchor=tk.W)
+            
+            # Distance
+            distance_label = ttk.Label(
+                pharm_frame, 
+                text=f"Distance: {pharmacy['distance']:.2f} km"
+            )
+            distance_label.pack(anchor=tk.W)
+            
+            # Address
+            if 'address' in pharmacy and pharmacy['address'] != "Unknown address":
+                address_label = ttk.Label(
+                    pharm_frame, 
+                    text=f"Address: {pharmacy['address']}"
+                )
+                address_label.pack(anchor=tk.W)
+                
+            # Phone
+            if 'phone' in pharmacy and pharmacy['phone'] != "Unknown":
+                phone_label = ttk.Label(
+                    pharm_frame, 
+                    text=f"Phone: {pharmacy['phone']}"
+                )
+                phone_label.pack(anchor=tk.W)
+                
+            # Opening hours
+            if 'opening_hours' in pharmacy and pharmacy['opening_hours'] != "Unknown":
+                hours_label = ttk.Label(
+                    pharm_frame, 
+                    text=f"Hours: {pharmacy['opening_hours']}"
+                )
+                hours_label.pack(anchor=tk.W)
+                
+            # Map button
+            map_button = ttk.Button(
+                pharm_frame, 
+                text="Open in Map", 
+                command=lambda lat=pharmacy['lat'], lon=pharmacy['lon']: self.open_map(lat, lon)
+            )
+            map_button.pack(anchor=tk.W, pady=5)
+            
+            # Add a separator
+            separator = ttk.Separator(self.pharmacy_results_frame, orient=tk.HORIZONTAL)
+            separator.pack(fill=tk.X, pady=5)
+            
+        # Update the canvas
+        self.pharmacy_canvas.update_idletasks()
+        self.pharmacy_canvas.configure(scrollregion=self.pharmacy_canvas.bbox('all'))
+        
+    def display_pharmacy_error(self, error_message):
+        """
+        Display an error message in the pharmacy tab.
+        
+        Args:
+            error_message (str): Error message to display
+        """
+        # Clear existing results
+        for widget in self.pharmacy_results_frame.winfo_children():
+            widget.destroy()
+            
+        error_label = ttk.Label(
+            self.pharmacy_results_frame, 
+            text=f"Error: {error_message}",
+            foreground="red",
+            font=("Arial", 12),
+            padding=20
+        )
+        error_label.pack(pady=20)
+        
+    def open_map(self, lat, lon):
+        """
+        Open the location in a web browser map.
+        
+        Args:
+            lat (float): Latitude
+            lon (float): Longitude
+        """
+        url = f"https://www.openstreetmap.org/?mlat={lat}&mlon={lon}#map=19/{lat}/{lon}"
+        webbrowser.open(url)
     
-    def open_settings(self):
-        """Open settings dialog"""
-        dialog = tk.Toplevel(self.root)
-        dialog.title("Settings")
-        dialog.geometry("600x500")
-        dialog.transient(self.root)
-        dialog.grab_set()
+    # ----- Settings Tab -----
+    
+    def setup_settings_tab(self):
+        """Set up the settings tab with notification and integration options."""
+        # Create a notebook for settings sections
+        settings_notebook = ttk.Notebook(self.settings_tab)
+        settings_notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         
-        # Create notebook for settings categories
-        notebook = ttk.Notebook(dialog)
-        notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        # Create settings tabs
+        notification_tab = ttk.Frame(settings_notebook, padding=10)
+        google_tab = ttk.Frame(settings_notebook, padding=10)
+        telegram_tab = ttk.Frame(settings_notebook, padding=10)
+        about_tab = ttk.Frame(settings_notebook, padding=10)
         
-        # General settings tab
-        general_tab = ttk.Frame(notebook, padding=20)
-        notebook.add(general_tab, text="General")
+        settings_notebook.add(notification_tab, text="Notifications")
+        settings_notebook.add(google_tab, text="Google Services")
+        settings_notebook.add(telegram_tab, text="Telegram")
+        settings_notebook.add(about_tab, text="About")
         
-        ttk.Label(general_tab, text="General Settings", 
-                 font=("TkDefaultFont", 14, "bold")).pack(anchor="w", pady=(0, 20))
+        # ----- Notifications Settings -----
         
-        # Notification settings
-        notify_frame = ttk.LabelFrame(general_tab, text="Notifications")
-        notify_frame.pack(fill=tk.X, pady=10)
+        # Email notification settings
+        email_frame = ttk.LabelFrame(notification_tab, text="Email Notifications", padding=10)
+        email_frame.pack(fill=tk.X, pady=10)
         
-        # System notifications
-        system_notify_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(notify_frame, text="Enable System Notifications", 
-                       variable=system_notify_var).pack(anchor="w", padx=20, pady=10)
+        # Email settings
+        self.email_enabled_var = tk.BooleanVar(value=self.notifier.email_enabled)
+        email_enabled_check = ttk.Checkbutton(
+            email_frame, 
+            text="Enable Email Notifications", 
+            variable=self.email_enabled_var
+        )
+        email_enabled_check.pack(anchor=tk.W, pady=5)
         
-        # Sound alerts
-        sound_notify_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(notify_frame, text="Enable Sound Alerts", 
-                       variable=sound_notify_var).pack(anchor="w", padx=20, pady=10)
+        # Sender
+        sender_frame = ttk.Frame(email_frame, padding=5)
+        sender_frame.pack(fill=tk.X, pady=2)
         
-        # Advance reminders
-        advance_frame = ttk.Frame(notify_frame)
-        advance_frame.pack(fill=tk.X, padx=20, pady=10)
+        sender_label = ttk.Label(sender_frame, text="Sender Email:", width=15)
+        sender_label.pack(side=tk.LEFT, padx=5)
         
-        ttk.Label(advance_frame, text="Send reminders").pack(side=tk.LEFT)
+        self.email_sender_var = tk.StringVar(value=self.notifier.email_sender)
+        sender_entry = ttk.Entry(sender_frame, textvariable=self.email_sender_var, width=30)
+        sender_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
         
-        advance_minutes_var = tk.StringVar(value="30")
-        ttk.Spinbox(advance_frame, from_=5, to=60, width=3, 
-                   textvariable=advance_minutes_var).pack(side=tk.LEFT, padx=5)
+        # Password
+        password_frame = ttk.Frame(email_frame, padding=5)
+        password_frame.pack(fill=tk.X, pady=2)
         
-        ttk.Label(advance_frame, text="minutes before scheduled time").pack(side=tk.LEFT)
+        password_label = ttk.Label(password_frame, text="Password:", width=15)
+        password_label.pack(side=tk.LEFT, padx=5)
         
-        # Cloud sync tab
-        cloud_tab = ttk.Frame(notebook, padding=20)
-        notebook.add(cloud_tab, text="Cloud Sync")
+        self.email_password_var = tk.StringVar(value=self.notifier.email_password)
+        password_entry = ttk.Entry(password_frame, textvariable=self.email_password_var, show="*", width=30)
+        password_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
         
-        ttk.Label(cloud_tab, text="Cloud Synchronization", 
-                 font=("TkDefaultFont", 14, "bold")).pack(anchor="w", pady=(0, 20))
+        # Recipient
+        recipient_frame = ttk.Frame(email_frame, padding=5)
+        recipient_frame.pack(fill=tk.X, pady=2)
         
-        # Google account
-        google_frame = ttk.LabelFrame(cloud_tab, text="Google Account")
-        google_frame.pack(fill=tk.X, pady=10)
+        recipient_label = ttk.Label(recipient_frame, text="Recipient Email:", width=15)
+        recipient_label.pack(side=tk.LEFT, padx=5)
         
-        # Show current status
-        if self.controller.cloud_sync.is_authenticated():
-            account_info = self.controller.cloud_sync.get_user_info()
-            ttk.Label(google_frame, text=f"Connected as: {account_info}").pack(
-                anchor="w", padx=20, pady=10)
-            
-            ttk.Button(google_frame, text="Disconnect Account", 
-                      command=self.disconnect_google_account).pack(
-                anchor="w", padx=20, pady=10)
-        else:
-            ttk.Label(google_frame, text="Not connected to Google").pack(
-                anchor="w", padx=20, pady=10)
-            
-            ttk.Button(google_frame, text="Connect Google Account", 
-                      command=self.connect_google_account).pack(
-                anchor="w", padx=20, pady=10)
+        self.email_recipient_var = tk.StringVar(value=self.notifier.email_recipient)
+        recipient_entry = ttk.Entry(recipient_frame, textvariable=self.email_recipient_var, width=30)
+        recipient_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
         
-        # Auto sync settings
-        sync_settings_frame = ttk.LabelFrame(cloud_tab, text="Sync Settings")
-        sync_settings_frame.pack(fill=tk.X, pady=10)
+        # Save email settings button
+        save_email_button = ttk.Button(
+            email_frame, 
+            text="Save Email Settings", 
+            command=self.save_email_settings
+        )
+        save_email_button.pack(anchor=tk.E, pady=10)
         
-        auto_sync_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(sync_settings_frame, text="Enable Automatic Sync", 
-                       variable=auto_sync_var).pack(anchor="w", padx=20, pady=10)
+        # System notification settings
+        system_frame = ttk.LabelFrame(notification_tab, text="System Notifications", padding=10)
+        system_frame.pack(fill=tk.X, pady=10)
         
-        # Sync frequency
-        sync_freq_frame = ttk.Frame(sync_settings_frame)
-        sync_freq_frame.pack(fill=tk.X, padx=20, pady=10)
+        self.system_enabled_var = tk.BooleanVar(value=True)  # Always enabled
+        system_enabled_check = ttk.Checkbutton(
+            system_frame, 
+            text="Enable System Notifications", 
+            variable=self.system_enabled_var
+        )
+        system_enabled_check.pack(anchor=tk.W, pady=5)
+        system_enabled_check.configure(state=tk.DISABLED)  # Can't disable system notifications
         
-        ttk.Label(sync_freq_frame, text="Sync every").pack(side=tk.LEFT)
+        system_note = ttk.Label(
+            system_frame, 
+            text="System notifications are always enabled and will appear as pop-ups on your desktop.",
+            wraplength=400
+        )
+        system_note.pack(anchor=tk.W, pady=5)
         
-        sync_interval_var = tk.StringVar(value="30")
-        ttk.Spinbox(sync_freq_frame, from_=5, to=1440, width=4, 
-                   textvariable=sync_interval_var).pack(side=tk.LEFT, padx=5)
+        # ----- Google Services Settings -----
         
-        ttk.Label(sync_freq_frame, text="minutes").pack(side=tk.LEFT)
+        # Google Drive
+        drive_frame = ttk.LabelFrame(google_tab, text="Google Drive Backup", padding=10)
+        drive_frame.pack(fill=tk.X, pady=10)
         
-        # Manual sync buttons
-        manual_sync_frame = ttk.Frame(sync_settings_frame)
-        manual_sync_frame.pack(fill=tk.X, padx=20, pady=10)
+        self.drive_enabled_var = tk.BooleanVar(value=False)
+        drive_enabled_check = ttk.Checkbutton(
+            drive_frame, 
+            text="Enable Google Drive Backup", 
+            variable=self.drive_enabled_var
+        )
+        drive_enabled_check.pack(anchor=tk.W, pady=5)
         
-        ttk.Button(manual_sync_frame, text="Backup Now", 
-                  command=self.backup_to_cloud).pack(side=tk.LEFT, padx=5)
+        drive_auth_button = ttk.Button(
+            drive_frame, 
+            text="Authenticate with Google Drive", 
+            command=self.authenticate_drive
+        )
+        drive_auth_button.pack(anchor=tk.W, pady=5)
         
-        ttk.Button(manual_sync_frame, text="Restore", 
-                  command=self.restore_from_cloud).pack(side=tk.LEFT, padx=5)
+        drive_status_frame = ttk.Frame(drive_frame, padding=5)
+        drive_status_frame.pack(fill=tk.X, pady=5)
         
-        # Telegram tab
-        telegram_tab = ttk.Frame(notebook, padding=20)
-        notebook.add(telegram_tab, text="Telegram")
+        drive_status_label = ttk.Label(drive_status_frame, text="Status:")
+        drive_status_label.pack(side=tk.LEFT, padx=5)
         
-        ttk.Label(telegram_tab, text="Telegram Notifications", 
-                 font=("TkDefaultFont", 14, "bold")).pack(anchor="w", pady=(0, 20))
+        self.drive_status_var = tk.StringVar(value="Not authenticated")
+        drive_status_value = ttk.Label(drive_status_frame, textvariable=self.drive_status_var)
+        drive_status_value.pack(side=tk.LEFT, padx=5)
         
-        # Telegram settings
-        telegram_frame = ttk.LabelFrame(telegram_tab, text="Telegram Bot Settings")
+        drive_sync_button = ttk.Button(
+            drive_frame, 
+            text="Sync Now", 
+            command=lambda: self.drive_sync.force_sync(upload=True)
+        )
+        drive_sync_button.pack(side=tk.LEFT, padx=5, pady=5)
+        
+        # Google Calendar
+        calendar_frame = ttk.LabelFrame(google_tab, text="Google Calendar Integration", padding=10)
+        calendar_frame.pack(fill=tk.X, pady=10)
+        
+        self.calendar_enabled_var = tk.BooleanVar(value=False)
+        calendar_enabled_check = ttk.Checkbutton(
+            calendar_frame, 
+            text="Enable Google Calendar Integration", 
+            variable=self.calendar_enabled_var
+        )
+        calendar_enabled_check.pack(anchor=tk.W, pady=5)
+        
+        calendar_auth_button = ttk.Button(
+            calendar_frame, 
+            text="Authenticate with Google Calendar", 
+            command=self.authenticate_calendar
+        )
+        calendar_auth_button.pack(anchor=tk.W, pady=5)
+        
+        calendar_status_frame = ttk.Frame(calendar_frame, padding=5)
+        calendar_status_frame.pack(fill=tk.X, pady=5)
+        
+        calendar_status_label = ttk.Label(calendar_status_frame, text="Status:")
+        calendar_status_label.pack(side=tk.LEFT, padx=5)
+        
+        self.calendar_status_var = tk.StringVar(value="Not authenticated")
+        calendar_status_value = ttk.Label(calendar_status_frame, textvariable=self.calendar_status_var)
+        calendar_status_value.pack(side=tk.LEFT, padx=5)
+        
+        calendar_sync_button = ttk.Button(
+            calendar_frame, 
+            text="Sync Now", 
+            command=self.calendar_integration.sync_medicine_schedule
+        )
+        calendar_sync_button.pack(side=tk.LEFT, padx=5, pady=5)
+        
+        # Google Sheets
+        sheets_frame = ttk.LabelFrame(google_tab, text="Google Sheets Integration", padding=10)
+        sheets_frame.pack(fill=tk.X, pady=10)
+        
+        self.sheets_enabled_var = tk.BooleanVar(value=False)
+        sheets_enabled_check = ttk.Checkbutton(
+            sheets_frame, 
+            text="Enable Google Sheets Integration", 
+            variable=self.sheets_enabled_var
+        )
+        sheets_enabled_check.pack(anchor=tk.W, pady=5)
+        
+        sheets_auth_button = ttk.Button(
+            sheets_frame, 
+            text="Authenticate with Google Sheets", 
+            command=self.authenticate_sheets
+        )
+        sheets_auth_button.pack(anchor=tk.W, pady=5)
+        
+        sheets_status_frame = ttk.Frame(sheets_frame, padding=5)
+        sheets_status_frame.pack(fill=tk.X, pady=5)
+        
+        sheets_status_label = ttk.Label(sheets_status_frame, text="Status:")
+        sheets_status_label.pack(side=tk.LEFT, padx=5)
+        
+        self.sheets_status_var = tk.StringVar(value="Not authenticated")
+        sheets_status_value = ttk.Label(sheets_status_frame, textvariable=self.sheets_status_var)
+        sheets_status_value.pack(side=tk.LEFT, padx=5)
+        
+        sheets_buttons_frame = ttk.Frame(sheets_frame, padding=5)
+        sheets_buttons_frame.pack(fill=tk.X, pady=5)
+        
+        sheets_export_button = ttk.Button(
+            sheets_buttons_frame, 
+            text="Export to Sheets", 
+            command=lambda: self.sheets_integration.export_medicines_to_sheets()
+        )
+        sheets_export_button.pack(side=tk.LEFT, padx=5)
+        
+        sheets_import_button = ttk.Button(
+            sheets_buttons_frame, 
+            text="Import from Sheets", 
+            command=lambda: self.sheets_integration.import_medicines_from_sheets()
+        )
+        sheets_import_button.pack(side=tk.LEFT, padx=5)
+        
+        # Save Google settings button
+        save_google_button = ttk.Button(
+            google_tab, 
+            text="Save Google Settings", 
+            command=self.save_google_settings
+        )
+        save_google_button.pack(anchor=tk.E, pady=10)
+        
+        # ----- Telegram Settings -----
+        
+        # Telegram Bot
+        telegram_frame = ttk.LabelFrame(telegram_tab, text="Telegram Bot Settings", padding=10)
         telegram_frame.pack(fill=tk.X, pady=10)
         
-        if self.controller.telegram_bot:
-            # Bot token (masked)
-            token_frame = ttk.Frame(telegram_frame)
-            token_frame.pack(fill=tk.X, padx=20, pady=10)
+        self.telegram_enabled_var = tk.BooleanVar(value=self.telegram_bot.is_configured())
+        telegram_enabled_check = ttk.Checkbutton(
+            telegram_frame, 
+            text="Enable Telegram Notifications", 
+            variable=self.telegram_enabled_var
+        )
+        telegram_enabled_check.pack(anchor=tk.W, pady=5)
+        
+        # Token
+        token_frame = ttk.Frame(telegram_frame, padding=5)
+        token_frame.pack(fill=tk.X, pady=2)
+        
+        token_label = ttk.Label(token_frame, text="Bot Token:", width=15)
+        token_label.pack(side=tk.LEFT, padx=5)
+        
+        self.telegram_token_var = tk.StringVar(value=self.telegram_bot.token)
+        token_entry = ttk.Entry(token_frame, textvariable=self.telegram_token_var, width=40)
+        token_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+        
+        # Chat IDs
+        chat_frame = ttk.LabelFrame(telegram_frame, text="Registered Chat IDs", padding=5)
+        chat_frame.pack(fill=tk.X, pady=5)
+        
+        # Display chat IDs
+        self.telegram_chats_text = tk.Text(chat_frame, height=5, width=40)
+        self.telegram_chats_text.pack(fill=tk.X, pady=5)
+        
+        # Populate chat IDs
+        for chat_id in self.telegram_bot.chat_ids:
+            self.telegram_chats_text.insert(tk.END, f"{chat_id}\n")
             
-            ttk.Label(token_frame, text="Bot Token:").pack(side=tk.LEFT)
+        # Instructions
+        instructions_label = ttk.Label(
+            telegram_frame, 
+            text="To use Telegram notifications: \n"
+                 "1. Create a bot with BotFather on Telegram and get the token. \n"
+                 "2. Start a chat with your bot and use /start command. \n"
+                 "3. The bot will then send you medicine reminders.",
+            wraplength=400
+        )
+        instructions_label.pack(anchor=tk.W, pady=10)
+        
+        # Save Telegram settings button
+        save_telegram_button = ttk.Button(
+            telegram_frame, 
+            text="Save Telegram Settings", 
+            command=self.save_telegram_settings
+        )
+        save_telegram_button.pack(anchor=tk.E, pady=10)
+        
+        # ----- About Tab -----
+        
+        about_label = ttk.Label(
+            about_tab, 
+            text="Medicine Reminder Application",
+            font=("Arial", 16, "bold")
+        )
+        about_label.pack(pady=10)
+        
+        version_label = ttk.Label(
+            about_tab, 
+            text="Version 1.0",
+            font=("Arial", 10)
+        )
+        version_label.pack()
+        
+        description_label = ttk.Label(
+            about_tab, 
+            text="An application to help you manage your medicines, send reminders, "
+                 "and track your intake progress.",
+            wraplength=400
+        )
+        description_label.pack(pady=10)
+        
+        features_frame = ttk.LabelFrame(about_tab, text="Features", padding=10)
+        features_frame.pack(fill=tk.X, pady=10, padx=20)
+        
+        features_text = (
+            "• Medicine Management with Barcode Scanning\n"
+            "• Reminder Notifications (System, Email, Telegram)\n"
+            "• Medicine Schedule Calendar\n"
+            "• Google Services Integration\n"
+            "• Nearby Pharmacy Locator\n"
+            "• Streak Tracking for Adherence Monitoring"
+        )
+        
+        features_label = ttk.Label(
+            features_frame, 
+            text=features_text,
+            justify=tk.LEFT,
+            wraplength=400
+        )
+        features_label.pack(anchor=tk.W)
+        
+        # Update status of Google services
+        self.update_google_status()
+        
+    def save_email_settings(self):
+        """Save email notification settings."""
+        try:
+            # Get values from the form
+            enabled = self.email_enabled_var.get()
+            sender = self.email_sender_var.get().strip()
+            password = self.email_password_var.get().strip()
+            recipient = self.email_recipient_var.get().strip()
             
-            # Show masked token with last 4 chars visible
-            token = os.getenv("TELEGRAM_BOT_TOKEN", "")
-            masked_token = "*" * (len(token) - 4) + token[-4:] if token else ""
-            ttk.Entry(token_frame, width=30, state="readonly", 
-                     textvariable=tk.StringVar(value=masked_token)).pack(side=tk.LEFT, padx=5)
-            
-            # Chat ID
-            chat_id_frame = ttk.Frame(telegram_frame)
-            chat_id_frame.pack(fill=tk.X, padx=20, pady=10)
-            
-            ttk.Label(chat_id_frame, text="Chat ID:").pack(side=tk.LEFT)
-            
-            # Get current chat ID from settings
-            chat_id = self.controller.db.get_user_settings().get("telegram_chat_id", "")
-            chat_id_var = tk.StringVar(value=chat_id)
-            ttk.Entry(chat_id_frame, width=30, textvariable=chat_id_var).pack(side=tk.LEFT, padx=5)
-            
-            # Enable Telegram
-            telegram_enabled_var = tk.BooleanVar(value=bool(chat_id))
-            ttk.Checkbutton(telegram_frame, text="Enable Telegram Notifications", 
-                           variable=telegram_enabled_var).pack(anchor="w", padx=20, pady=10)
-            
-            # Test Telegram button
-            def test_telegram():
-                try:
-                    chat_id = chat_id_var.get().strip()
-                    if not chat_id:
-                        messagebox.showerror("Error", "Please enter a Chat ID")
-                        return
+            # Validate required fields if enabled
+            if enabled:
+                if not sender or not password or not recipient:
+                    messagebox.showerror("Error", "All email fields are required when email notifications are enabled.")
+                    return
                     
-                    # Save chat ID to settings
-                    self.controller.db.update_telegram_settings(chat_id)
-                    
-                    # Send test message
-                    self.controller.telegram_bot.send_message(
-                        chat_id=chat_id,
-                        text="Test message from Medicine Reminder App! 💊"
-                    )
-                    
-                    messagebox.showinfo("Success", "Test message sent successfully")
-                    
-                except Exception as e:
-                    logger.error(f"Error sending Telegram test: {e}")
-                    messagebox.showerror("Error", f"Failed to send message: {e}")
+                # Configure the notifier
+                self.notifier.configure_email(sender, password, recipient)
+                
+                # Save to environment variables for persistence
+                os.environ["EMAIL_SENDER"] = sender
+                os.environ["EMAIL_PASSWORD"] = password
+                os.environ["EMAIL_RECIPIENT"] = recipient
+                
+                messagebox.showinfo("Success", "Email settings saved successfully.")
+            else:
+                # Disable email notifications
+                self.notifier.email_enabled = False
+                messagebox.showinfo("Success", "Email notifications disabled.")
+                
+        except Exception as e:
+            self.logger.error(f"Error saving email settings: {str(e)}")
+            messagebox.showerror("Error", f"Failed to save email settings: {str(e)}")
             
-            ttk.Button(telegram_frame, text="Send Test Message", 
-                      command=test_telegram).pack(anchor="w", padx=20, pady=10)
-            
+    def update_google_status(self):
+        """Update the status display of Google services."""
+        # Drive status
+        if self.drive_sync.is_authenticated():
+            self.drive_status_var.set("Authenticated")
+            self.drive_enabled_var.set(True)
         else:
-            ttk.Label(telegram_frame, 
-                     text="Telegram Bot is not configured. Please set TELEGRAM_BOT_TOKEN in environment variables.").pack(
-                padx=20, pady=20)
-        
-        # Save settings button
-        def save_settings():
-            try:
-                # Save general settings
-                settings = {
-                    "system_notify": system_notify_var.get(),
-                    "sound_notify": sound_notify_var.get(),
-                    "advance_minutes": int(advance_minutes_var.get()),
-                    "auto_sync": auto_sync_var.get(),
-                    "sync_interval": int(sync_interval_var.get())
-                }
-                
-                # Save Telegram settings if enabled
-                if self.controller.telegram_bot and telegram_enabled_var.get():
-                    settings["telegram_chat_id"] = chat_id_var.get().strip()
-                
-                # Save to database
-                self.controller.db.save_user_settings(settings)
-                
-                dialog.destroy()
-                messagebox.showinfo("Success", "Settings saved successfully")
-                
-            except Exception as e:
-                logger.error(f"Error saving settings: {e}")
-                messagebox.showerror("Error", f"Failed to save settings: {e}")
-        
-        button_frame = ttk.Frame(dialog)
-        button_frame.pack(fill=tk.X, padx=10, pady=10)
-        
-        ttk.Button(button_frame, text="Cancel", command=dialog.destroy).pack(side=tk.RIGHT, padx=5)
-        ttk.Button(button_frame, text="Save", command=save_settings).pack(side=tk.RIGHT, padx=5)
-    
-    def connect_google_account(self):
-        """Start Google authentication process"""
+            self.drive_status_var.set("Not authenticated")
+            self.drive_enabled_var.set(False)
+            
+        # Calendar status
+        if self.calendar_integration.is_authenticated():
+            self.calendar_status_var.set("Authenticated")
+            self.calendar_enabled_var.set(True)
+        else:
+            self.calendar_status_var.set("Not authenticated")
+            self.calendar_enabled_var.set(False)
+            
+        # Sheets status
+        if self.sheets_integration.is_authenticated():
+            self.sheets_status_var.set("Authenticated")
+            self.sheets_enabled_var.set(True)
+        else:
+            self.sheets_status_var.set("Not authenticated")
+            self.sheets_enabled_var.set(False)
+            
+    def authenticate_drive(self):
+        """Authenticate with Google Drive."""
         try:
-            # This would launch the browser auth flow
-            auth_url = self.controller.cloud_sync.get_auth_url()
+            if self.drive_sync.authenticate():
+                messagebox.showinfo("Success", "Authenticated with Google Drive successfully.")
+                self.update_google_status()
+            else:
+                messagebox.showerror("Error", "Authentication with Google Drive failed.")
+        except Exception as e:
+            self.logger.error(f"Error authenticating with Google Drive: {str(e)}")
+            messagebox.showerror("Error", f"Authentication failed: {str(e)}")
             
-            if not auth_url:
-                messagebox.showerror("Error", "Failed to generate authentication URL")
-                return
+    def authenticate_calendar(self):
+        """Authenticate with Google Calendar."""
+        try:
+            if self.calendar_integration.authenticate():
+                messagebox.showinfo("Success", "Authenticated with Google Calendar successfully.")
+                self.update_google_status()
+            else:
+                messagebox.showerror("Error", "Authentication with Google Calendar failed.")
+        except Exception as e:
+            self.logger.error(f"Error authenticating with Google Calendar: {str(e)}")
+            messagebox.showerror("Error", f"Authentication failed: {str(e)}")
             
-            # Ask user to enter the auth code
-            auth_dialog = tk.Toplevel(self.root)
-            auth_dialog.title("Google Authentication")
-            auth_dialog.geometry("500x300")
-            auth_dialog.transient(self.root)
-            auth_dialog.grab_set()
+    def authenticate_sheets(self):
+        """Authenticate with Google Sheets."""
+        try:
+            if self.sheets_integration.authenticate():
+                messagebox.showinfo("Success", "Authenticated with Google Sheets successfully.")
+                self.update_google_status()
+            else:
+                messagebox.showerror("Error", "Authentication with Google Sheets failed.")
+        except Exception as e:
+            self.logger.error(f"Error authenticating with Google Sheets: {str(e)}")
+            messagebox.showerror("Error", f"Authentication failed: {str(e)}")
             
-            ttk.Label(auth_dialog, text="Google Authentication", 
-                     font=("TkDefaultFont", 14, "bold")).pack(pady=10)
-            
-            ttk.Label(auth_dialog, 
-                     text="Please open the following URL in your browser:").pack(pady=5)
-            
-            # URL display (readonly)
-            url_var = tk.StringVar(value=auth_url)
-            url_entry = ttk.Entry(auth_dialog, textvariable=url_var, width=50)
-            url_entry.pack(padx=20, pady=5, fill=tk.X)
-            
-            # Copy URL button
-            def copy_url():
-                self.root.clipboard_clear()
-                self.root.clipboard_append(auth_url)
-                messagebox.showinfo("Copied", "URL copied to clipboard")
-            
-            ttk.Button(auth_dialog, text="Copy URL", command=copy_url).pack(pady=5)
-            
-            ttk.Label(auth_dialog, 
-                     text="After authentication, enter the code below:").pack(pady=10)
-            
-            # Code entry
-            code_var = tk.StringVar()
-            ttk.Entry(auth_dialog, textvariable=code_var, width=30).pack(pady=5)
-            
-            # Submit button
-            def submit_code():
-                try:
-                    auth_code = code_var.get().strip()
-                    if not auth_code:
-                        messagebox.showerror("Error", "Please enter the authentication code")
+    def save_google_settings(self):
+        """Save Google services settings."""
+        try:
+            # Google Drive
+            drive_enabled = self.drive_enabled_var.get()
+            if drive_enabled:
+                if not self.drive_sync.is_authenticated():
+                    if not self.drive_sync.authenticate():
+                        messagebox.showerror("Error", "Authentication with Google Drive required.")
                         return
-                    
-                    # Exchange code for tokens
-                    success = self.controller.cloud_sync.exchange_code(auth_code)
-                    
-                    if success:
-                        auth_dialog.destroy()
-                        messagebox.showinfo("Success", "Google account connected successfully")
-                        self.open_settings()  # Refresh settings dialog
-                    else:
-                        messagebox.showerror("Error", "Failed to authenticate with Google")
                         
-                except Exception as e:
-                    logger.error(f"Error in Google auth: {e}")
-                    messagebox.showerror("Error", f"Authentication error: {e}")
-            
-            button_frame = ttk.Frame(auth_dialog)
-            button_frame.pack(fill=tk.X, padx=20, pady=20)
-            
-            ttk.Button(button_frame, text="Cancel", 
-                      command=auth_dialog.destroy).pack(side=tk.RIGHT, padx=5)
-            
-            ttk.Button(button_frame, text="Submit", 
-                      command=submit_code).pack(side=tk.RIGHT, padx=5)
-            
-        except Exception as e:
-            logger.error(f"Error starting Google auth: {e}")
-            messagebox.showerror("Error", f"Failed to start authentication: {e}")
-    
-    def disconnect_google_account(self):
-        """Disconnect Google account"""
-        try:
-            if messagebox.askyesno("Confirm", "Are you sure you want to disconnect your Google account?"):
-                self.controller.cloud_sync.revoke_token()
-                messagebox.showinfo("Success", "Google account disconnected")
-                self.open_settings()  # Refresh settings dialog
-        except Exception as e:
-            logger.error(f"Error disconnecting account: {e}")
-            messagebox.showerror("Error", f"Failed to disconnect account: {e}")
-    
-    def backup_to_cloud(self):
-        """Backup data to cloud"""
-        try:
-            if not self.controller.cloud_sync.is_authenticated():
-                if messagebox.askyesno("Not Connected", 
-                                      "You need to connect a Google account first. Connect now?"):
-                    self.connect_google_account()
-                return
-            
-            # Perform backup
-            success = self.controller.cloud_sync.backup_database()
-            
-            if success:
-                messagebox.showinfo("Success", "Database backed up to cloud successfully")
-                self.sync_status_label.config(text=f"Last synced: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}")
+                # Start sync if not already running
+                if not hasattr(self.drive_sync, 'sync_thread') or not self.drive_sync.sync_thread:
+                    self.drive_sync.start_sync()
             else:
-                messagebox.showerror("Error", "Failed to backup database to cloud")
-                
-        except Exception as e:
-            logger.error(f"Error backing up to cloud: {e}")
-            messagebox.showerror("Error", f"Backup failed: {e}")
-    
-    def restore_from_cloud(self):
-        """Restore data from cloud"""
-        try:
-            if not self.controller.cloud_sync.is_authenticated():
-                if messagebox.askyesno("Not Connected", 
-                                      "You need to connect a Google account first. Connect now?"):
-                    self.connect_google_account()
-                return
-            
-            # Confirm restore
-            if not messagebox.askyesno("Confirm Restore", 
-                                      "This will replace your current data with the cloud backup. Continue?"):
-                return
-            
-            # Perform restore
-            success = self.controller.cloud_sync.restore_database()
-            
-            if success:
-                messagebox.showinfo("Success", "Database restored from cloud successfully")
-                
-                # Refresh all data
-                self.load_medicines_data()
-                self.refresh_dashboard()
-                self.update_calendar_view()
-                
+                # Stop sync if running
+                if hasattr(self.drive_sync, 'sync_thread') and self.drive_sync.sync_thread:
+                    self.drive_sync.stop_sync()
+                    
+            # Google Calendar
+            calendar_enabled = self.calendar_enabled_var.get()
+            if calendar_enabled:
+                if not self.calendar_integration.is_authenticated():
+                    if not self.calendar_integration.authenticate():
+                        messagebox.showerror("Error", "Authentication with Google Calendar required.")
+                        return
+                        
+                # Start sync if not already running
+                if not hasattr(self.calendar_integration, 'sync_thread') or not self.calendar_integration.sync_thread:
+                    self.calendar_integration.start_sync()
             else:
-                messagebox.showerror("Error", "Failed to restore database from cloud")
+                # Stop sync if running
+                if hasattr(self.calendar_integration, 'sync_thread') and self.calendar_integration.sync_thread:
+                    self.calendar_integration.stop_sync()
+                    
+            # Google Sheets
+            sheets_enabled = self.sheets_enabled_var.get()
+            if sheets_enabled:
+                if not self.sheets_integration.is_authenticated():
+                    if not self.sheets_integration.authenticate():
+                        messagebox.showerror("Error", "Authentication with Google Sheets required.")
+                        return
+                        
+                # Start sync if not already running
+                if not hasattr(self.sheets_integration, 'sync_thread') or not self.sheets_integration.sync_thread:
+                    self.sheets_integration.start_sync()
+            else:
+                # Stop sync if running
+                if hasattr(self.sheets_integration, 'sync_thread') and self.sheets_integration.sync_thread:
+                    self.sheets_integration.stop_sync()
+                    
+            messagebox.showinfo("Success", "Google settings saved successfully.")
+            
+        except Exception as e:
+            self.logger.error(f"Error saving Google settings: {str(e)}")
+            messagebox.showerror("Error", f"Failed to save Google settings: {str(e)}")
+            
+    def save_telegram_settings(self):
+        """Save Telegram bot settings."""
+        try:
+            # Get values from the form
+            enabled = self.telegram_enabled_var.get()
+            token = self.telegram_token_var.get().strip()
+            
+            # Validate token if enabled
+            if enabled:
+                if not token:
+                    messagebox.showerror("Error", "Bot token is required when Telegram notifications are enabled.")
+                    return
+                    
+                # Set the token
+                os.environ["TELEGRAM_BOT_TOKEN"] = token
+                
+                # Get chat IDs from the text field
+                chat_ids_text = self.telegram_chats_text.get(1.0, tk.END).strip()
+                chat_ids = [line.strip() for line in chat_ids_text.split('\n') if line.strip()]
+                
+                # Restart the bot
+                self.telegram_bot.stop()
+                
+                # Create a new bot instance with the new token
+                self.telegram_bot = TelegramBot(self.db_manager)
+                
+                # Add the chat IDs
+                for chat_id in chat_ids:
+                    self.telegram_bot.add_chat(chat_id)
+                    
+                # Start the bot
+                if self.telegram_bot.start():
+                    messagebox.showinfo("Success", "Telegram settings saved and bot started successfully.")
+                else:
+                    messagebox.showerror("Error", "Failed to start Telegram bot.")
+            else:
+                # Stop the bot
+                self.telegram_bot.stop()
+                messagebox.showinfo("Success", "Telegram notifications disabled.")
                 
         except Exception as e:
-            logger.error(f"Error restoring from cloud: {e}")
-            messagebox.showerror("Error", f"Restore failed: {e}")
-    
-    def show_about(self):
-        """Show about dialog"""
-        dialog = tk.Toplevel(self.root)
-        dialog.title("About Medicine Reminder")
-        dialog.geometry("400x300")
-        dialog.transient(self.root)
-        dialog.grab_set()
-        
-        frame = ttk.Frame(dialog, padding=20)
-        frame.pack(fill=tk.BOTH, expand=True)
-        
-        ttk.Label(frame, text="Medicine Reminder", 
-                 font=("TkDefaultFont", 16, "bold")).pack(pady=(0, 5))
-        
-        ttk.Label(frame, text="Version 1.0").pack(pady=5)
-        
-        ttk.Separator(frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=15)
-        
-        ttk.Label(frame, text="A comprehensive medicine management application with\n"
-                             "barcode scanning, reminders, and cloud synchronization.").pack(pady=10)
-        
-        ttk.Label(frame, text="Features:").pack(anchor="w", pady=(10, 5))
-        features = [
-            "• Barcode scanning for medicines",
-            "• Reminder notifications",
-            "• Google Calendar & Sheets integration",
-            "• Telegram notifications",
-            "• Cloud backup and sync",
-            "• Nearby pharmacy locator"
-        ]
-        
-        for feature in features:
-            ttk.Label(frame, text=feature).pack(anchor="w", padx=20)
-        
-        ttk.Button(frame, text="Close", command=dialog.destroy).pack(pady=20)
+            self.logger.error(f"Error saving Telegram settings: {str(e)}")
+            messagebox.showerror("Error", f"Failed to save Telegram settings: {str(e)}")

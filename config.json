@@ -1,0 +1,68 @@
+{
+  "application": {
+    "name": "Medicine Reminder",
+    "version": "1.0.0"
+  },
+  "database": {
+    "path": "data/medicine_database.db"
+  },
+  "notifications": {
+    "system": {
+      "enabled": true,
+      "sound": true,
+      "timeout": 10
+    },
+    "email": {
+      "enabled": false,
+      "smtp_server": "smtp.gmail.com",
+      "smtp_port": 587
+    },
+    "telegram": {
+      "enabled": false,
+      "polling_interval": 30
+    }
+  },
+  "barcode_scanner": {
+    "default_camera_index": 0
+  },
+  "pharmacy_locator": {
+    "default_radius_km": 5,
+    "max_results": 50
+  },
+  "cloud_sync": {
+    "google_drive": {
+      "enabled": false,
+      "folder_name": "MedicineReminderApp",
+      "sync_interval_minutes": 15
+    },
+    "google_calendar": {
+      "enabled": false,
+      "calendar_name": "Medicine Reminders",
+      "sync_interval_minutes": 60
+    },
+    "google_sheets": {
+      "enabled": false,
+      "medicines_spreadsheet_name": "Medicine Tracker - Medicines",
+      "logs_spreadsheet_name": "Medicine Tracker - Logs",
+      "sync_interval_minutes": 30
+    }
+  },
+  "ui": {
+    "theme": "default",
+    "window_size": {
+      "width": 1000,
+      "height": 700
+    },
+    "font_size": {
+      "title": 18,
+      "heading": 14,
+      "text": 12
+    }
+  },
+  "logging": {
+    "level": "INFO",
+    "file": "logs/medicine_reminder.log",
+    "max_size_mb": 5,
+    "backup_count": 3
+  }
+}

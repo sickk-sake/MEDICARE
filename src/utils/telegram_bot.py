@@ -1,265 +1,347 @@
 import os
 import logging
+import threading
+import time
 import requests
-import json
-from datetime import datetime
-
-logger = logging.getLogger(__name__)
+from datetime import datetime, timedelta
 
 class TelegramBot:
-    """Telegram bot integration for medicine reminders"""
+    """
+    A class to handle Telegram bot integration for sending medicine reminders
+    and receiving commands from users.
+    """
     
-    def __init__(self, token=None):
+    def __init__(self, db_manager):
         """
-        Initialize the Telegram bot
+        Initialize the Telegram bot.
         
         Args:
-            token: Telegram Bot API token, if None will try to get from environment
+            db_manager: Database manager instance to access medicine data
         """
-        # Get token from env if not provided
-        self.token = token or os.getenv("TELEGRAM_BOT_TOKEN")
+        self.db_manager = db_manager
+        self.logger = logging.getLogger(__name__)
         
+        # Get Telegram Bot API token from environment variable
+        self.token = os.getenv("TELEGRAM_BOT_TOKEN", "")
         if not self.token:
-            logger.warning("Telegram Bot token not provided. Telegram notifications are disabled.")
-            self.enabled = False
-        else:
-            self.enabled = True
-            self.api_url = f"https://api.telegram.org/bot{self.token}"
-            logger.debug("Telegram Bot initialized")
+            self.logger.warning("Telegram Bot token not found in environment variables")
             
-            # Test the API token
-            self._test_token()
-    
-    def _test_token(self):
-        """Test the API token to ensure it's valid"""
-        if not self.enabled:
+        self.chat_ids = set()  # Set of chat IDs to send notifications to
+        self.bot_thread = None
+        self.stop_flag = threading.Event()
+        self.api_url = f"https://api.telegram.org/bot{self.token}"
+        self.last_update_id = 0
+        
+    def is_configured(self):
+        """Check if the bot is properly configured."""
+        return bool(self.token)
+        
+    def add_chat(self, chat_id):
+        """
+        Add a chat ID to send notifications to.
+        
+        Args:
+            chat_id (int or str): Telegram chat ID
+        """
+        self.chat_ids.add(str(chat_id))
+        self.logger.info(f"Added chat ID: {chat_id}")
+        
+    def remove_chat(self, chat_id):
+        """
+        Remove a chat ID from the notification list.
+        
+        Args:
+            chat_id (int or str): Telegram chat ID
+        """
+        chat_id_str = str(chat_id)
+        if chat_id_str in self.chat_ids:
+            self.chat_ids.remove(chat_id_str)
+            self.logger.info(f"Removed chat ID: {chat_id}")
+        
+    def send_message(self, chat_id, text):
+        """
+        Send a message to a specific chat.
+        
+        Args:
+            chat_id (int or str): Telegram chat ID
+            text (str): Message text
+            
+        Returns:
+            bool: True if message was sent successfully, False otherwise
+        """
+        if not self.is_configured():
+            self.logger.error("Telegram bot not configured")
             return False
             
         try:
-            response = requests.get(f"{self.api_url}/getMe", timeout=5)
+            params = {
+                'chat_id': chat_id,
+                'text': text,
+                'parse_mode': 'Markdown'
+            }
+            response = requests.post(f"{self.api_url}/sendMessage", params=params)
+            
             if response.status_code == 200:
-                bot_info = response.json()
-                if bot_info.get("ok"):
-                    bot_username = bot_info.get("result", {}).get("username")
-                    logger.info(f"Telegram Bot authenticated as @{bot_username}")
-                    return True
-                else:
-                    error = bot_info.get("description", "Unknown error")
-                    logger.error(f"Telegram Bot authentication failed: {error}")
-                    self.enabled = False
-                    return False
+                return True
             else:
-                logger.error(f"Telegram Bot authentication failed: HTTP {response.status_code}")
-                self.enabled = False
+                self.logger.error(f"Failed to send Telegram message: {response.text}")
                 return False
                 
         except Exception as e:
-            logger.error(f"Error testing Telegram Bot token: {e}")
-            self.enabled = False
+            self.logger.error(f"Error sending Telegram message: {str(e)}")
             return False
-    
-    def send_message(self, chat_id, text, parse_mode="HTML"):
+            
+    def broadcast_message(self, text):
         """
-        Send a message to a Telegram chat
+        Send a message to all registered chat IDs.
         
         Args:
-            chat_id: Telegram chat ID
-            text: Message text
-            parse_mode: Message format (HTML, Markdown)
+            text (str): Message text
             
         Returns:
-            Response JSON if successful, None otherwise
+            int: Number of successfully sent messages
         """
-        if not self.enabled:
-            logger.warning("Telegram Bot is not enabled. Message not sent.")
-            return None
+        if not self.is_configured():
+            self.logger.error("Telegram bot not configured")
+            return 0
             
-        try:
-            url = f"{self.api_url}/sendMessage"
-            
-            payload = {
-                "chat_id": chat_id,
-                "text": text,
-                "parse_mode": parse_mode
-            }
-            
-            response = requests.post(url, data=payload, timeout=10)
-            
-            if response.status_code == 200:
-                result = response.json()
-                logger.debug(f"Telegram message sent to chat {chat_id}")
-                return result
-            else:
-                logger.error(f"Error sending Telegram message: HTTP {response.status_code} - {response.text}")
-                return None
+        success_count = 0
+        for chat_id in self.chat_ids:
+            if self.send_message(chat_id, text):
+                success_count += 1
                 
-        except Exception as e:
-            logger.error(f"Error sending Telegram message: {e}")
-            return None
-    
-    def send_medicine_reminder(self, chat_id, medicine_data):
+        return success_count
+        
+    def send_reminder(self, medicine_name, dosage, notes=None):
         """
-        Send a formatted medicine reminder message
+        Send a medicine reminder to all registered chats.
         
         Args:
-            chat_id: Telegram chat ID
-            medicine_data: Dictionary containing medicine details
+            medicine_name (str): Name of the medicine
+            dosage (str): Dosage information
+            notes (str, optional): Additional notes about the medicine
             
         Returns:
-            Response JSON if successful, None otherwise
+            int: Number of successfully sent reminders
         """
-        if not self.enabled:
-            return None
+        current_time = datetime.now().strftime("%H:%M")
+        
+        message = (
+            f"*Medicine Reminder*\n\n"
+            f"Time to take: *{medicine_name}*\n"
+            f"Dosage: {dosage}\n"
+            f"Time: {current_time}"
+        )
+        
+        if notes:
+            message += f"\nNotes: {notes}"
             
-        try:
-            # Format the message with HTML
-            message = (
-                f"<b>Medicine Reminder</b> 💊\n\n"
-                f"<b>Medicine:</b> {medicine_data.get('name', 'Unknown')}\n"
-                f"<b>Dosage:</b> {medicine_data.get('dosage', 'Unknown')}\n"
-                f"<b>Time:</b> {datetime.now().strftime('%H:%M')}\n"
-            )
-            
-            # Add expiry warning if close to expiry
-            if 'expiry_date' in medicine_data:
-                expiry_date = datetime.strptime(medicine_data['expiry_date'], '%Y-%m-%d')
-                days_until_expiry = (expiry_date - datetime.now()).days
-                
-                if days_until_expiry <= 0:
-                    message += f"\n⚠️ <b>WARNING:</b> This medicine has EXPIRED! ⚠️"
-                elif days_until_expiry <= 30:
-                    message += f"\n⚠️ <b>WARNING:</b> This medicine expires in {days_until_expiry} days!"
-            
-            # Add instructions if available
-            if 'instructions' in medicine_data and medicine_data['instructions']:
-                message += f"\n\n<i>Instructions:</i> {medicine_data['instructions']}"
-            
-            return self.send_message(chat_id, message)
-            
-        except Exception as e:
-            logger.error(f"Error sending medicine reminder via Telegram: {e}")
-            return None
-    
-    def send_expiry_alert(self, chat_id, medicines):
+        return self.broadcast_message(message)
+        
+    def send_expiry_alert(self, medicine_name, expiry_date):
         """
-        Send an alert about medicines that are expiring soon
+        Send a medicine expiry alert to all registered chats.
         
         Args:
-            chat_id: Telegram chat ID
-            medicines: List of medicine dictionaries with expiry dates
+            medicine_name (str): Name of the medicine
+            expiry_date (str): Expiry date of the medicine
             
         Returns:
-            Response JSON if successful, None otherwise
+            int: Number of successfully sent alerts
         """
-        if not self.enabled or not medicines:
-            return None
-            
-        try:
-            # Format the message with HTML
-            message = f"<b>Medicine Expiry Alert</b> ⚠️\n\nThe following medicines are expiring soon:\n\n"
-            
-            for medicine in medicines:
-                name = medicine.get('name', 'Unknown')
-                expiry = medicine.get('expiry_date', 'Unknown')
-                
-                # Calculate days until expiry
-                try:
-                    expiry_date = datetime.strptime(expiry, '%Y-%m-%d')
-                    days_until_expiry = (expiry_date - datetime.now()).days
-                    
-                    if days_until_expiry <= 0:
-                        status = "EXPIRED"
-                    else:
-                        status = f"Expires in {days_until_expiry} days"
-                        
-                    message += f"• <b>{name}</b>: {expiry} ({status})\n"
-                    
-                except:
-                    message += f"• <b>{name}</b>: {expiry}\n"
-            
-            message += "\nPlease check and replace these medicines if necessary."
-            
-            return self.send_message(chat_id, message)
-            
-        except Exception as e:
-            logger.error(f"Error sending expiry alert via Telegram: {e}")
-            return None
-    
-    def get_chat_updates(self, offset=None, timeout=30):
-        """
-        Get updates (messages) from users
+        message = (
+            f"*Medicine Expiry Alert*\n\n"
+            f"Medicine: *{medicine_name}*\n"
+            f"Expiry Date: {expiry_date}\n\n"
+            f"Please replace this medicine soon!"
+        )
         
-        Args:
-            offset: Update ID to start from
-            timeout: Long polling timeout in seconds
-            
-        Returns:
-            List of updates if successful, empty list otherwise
+        return self.broadcast_message(message)
+        
+    def get_updates(self):
         """
-        if not self.enabled:
+        Get new message updates from Telegram.
+        
+        Returns:
+            list: List of update objects or empty list if error
+        """
+        if not self.is_configured():
             return []
             
         try:
-            url = f"{self.api_url}/getUpdates"
-            
             params = {
-                "timeout": timeout
+                'offset': self.last_update_id + 1,
+                'timeout': 30
             }
-            
-            if offset is not None:
-                params["offset"] = offset
-            
-            response = requests.get(url, params=params)
+            response = requests.get(f"{self.api_url}/getUpdates", params=params)
             
             if response.status_code == 200:
-                result = response.json()
-                if result.get("ok"):
-                    return result.get("result", [])
-                else:
-                    logger.error(f"Error getting Telegram updates: {result.get('description')}")
-                    return []
+                data = response.json()
+                if data['ok'] and data['result']:
+                    # Update the last update ID
+                    self.last_update_id = max(update['update_id'] for update in data['result'])
+                    return data['result']
+                return []
             else:
-                logger.error(f"Error getting Telegram updates: HTTP {response.status_code}")
+                self.logger.error(f"Failed to get Telegram updates: {response.text}")
                 return []
                 
         except Exception as e:
-            logger.error(f"Error getting Telegram updates: {e}")
+            self.logger.error(f"Error getting Telegram updates: {str(e)}")
             return []
-    
-    def set_commands(self, commands):
+            
+    def process_command(self, message):
         """
-        Set bot commands in Telegram menu
+        Process a command received from a Telegram user.
         
         Args:
-            commands: List of dictionaries with 'command' and 'description' keys
-            
-        Returns:
-            True if successful, False otherwise
+            message (dict): Message object from Telegram
         """
-        if not self.enabled:
-            return False
-            
         try:
-            url = f"{self.api_url}/setMyCommands"
+            chat_id = message['chat']['id']
+            text = message.get('text', '')
             
-            payload = {
-                "commands": json.dumps(commands)
-            }
-            
-            response = requests.post(url, data=payload)
-            
-            if response.status_code == 200:
-                result = response.json()
-                if result.get("ok"):
-                    logger.debug("Telegram bot commands updated successfully")
-                    return True
-                else:
-                    logger.error(f"Error setting Telegram commands: {result.get('description')}")
-                    return False
+            if not text:
+                return
+                
+            if text.startswith('/start'):
+                self.add_chat(chat_id)
+                self.send_message(chat_id, 
+                    "Welcome to Medicine Reminder Bot!\n\n"
+                    "I'll send you reminders when it's time to take your medicines.\n\n"
+                    "Available commands:\n"
+                    "/list - List all your medicines\n"
+                    "/today - See today's schedule\n"
+                    "/expiring - List medicines about to expire\n"
+                    "/stop - Stop receiving notifications"
+                )
+                
+            elif text.startswith('/stop'):
+                self.remove_chat(chat_id)
+                self.send_message(chat_id, "You've been unsubscribed from notifications.")
+                
+            elif text.startswith('/list'):
+                medicines = self.db_manager.get_all_medicines()
+                if not medicines:
+                    self.send_message(chat_id, "You don't have any medicines in your database.")
+                    return
+                    
+                message = "*Your Medicines*\n\n"
+                for med in medicines:
+                    message += f"• *{med['name']}* - {med['dosage']}\n"
+                    
+                self.send_message(chat_id, message)
+                
+            elif text.startswith('/today'):
+                today = datetime.now().strftime("%Y-%m-%d")
+                schedule = self.db_manager.get_medicines_for_date(today)
+                
+                if not schedule:
+                    self.send_message(chat_id, "You don't have any medicines scheduled for today.")
+                    return
+                    
+                message = "*Today's Medicine Schedule*\n\n"
+                for med in schedule:
+                    message += f"• *{med['time']}* - {med['name']} ({med['dosage']})\n"
+                    
+                self.send_message(chat_id, message)
+                
+            elif text.startswith('/expiring'):
+                expiring = self.db_manager.get_expiring_medicines(days=30)
+                
+                if not expiring:
+                    self.send_message(chat_id, "You don't have any medicines expiring soon.")
+                    return
+                    
+                message = "*Medicines Expiring Soon*\n\n"
+                for med in expiring:
+                    message += f"• *{med['name']}* - Expires on {med['expiry_date']}\n"
+                    
+                self.send_message(chat_id, message)
+                
             else:
-                logger.error(f"Error setting Telegram commands: HTTP {response.status_code}")
-                return False
+                self.send_message(chat_id,
+                    "Sorry, I don't understand that command.\n\n"
+                    "Available commands:\n"
+                    "/list - List all your medicines\n"
+                    "/today - See today's schedule\n"
+                    "/expiring - List medicines about to expire\n"
+                    "/stop - Stop receiving notifications"
+                )
                 
         except Exception as e:
-            logger.error(f"Error setting Telegram commands: {e}")
+            self.logger.error(f"Error processing Telegram command: {str(e)}")
+            
+    def _run_bot(self):
+        """
+        Run the bot's message handling loop in a separate thread.
+        """
+        self.logger.info("Telegram bot thread started")
+        
+        while not self.stop_flag.is_set():
+            try:
+                updates = self.get_updates()
+                
+                for update in updates:
+                    if 'message' in update:
+                        self.process_command(update['message'])
+                        
+                # Check if there are any current medicine reminders to send
+                now = datetime.now()
+                current_time = now.strftime("%H:%M")
+                
+                # Get medicines that should be taken now
+                medicines = self.db_manager.get_medicines_for_time(current_time)
+                
+                # Send reminders
+                for medicine in medicines:
+                    self.send_reminder(
+                        medicine_name=medicine['name'],
+                        dosage=medicine['dosage'],
+                        notes=medicine.get('notes')
+                    )
+                    
+                # Check for expiring medicines once a day
+                if now.hour == 9 and now.minute == 0:
+                    expiring = self.db_manager.get_expiring_medicines(days=7)
+                    for medicine in expiring:
+                        self.send_expiry_alert(
+                            medicine_name=medicine['name'],
+                            expiry_date=medicine['expiry_date']
+                        )
+                        
+                # Sleep for a bit before next check
+                time.sleep(10)
+                
+            except Exception as e:
+                self.logger.error(f"Error in Telegram bot thread: {str(e)}")
+                time.sleep(30)  # Sleep longer on error
+                
+    def start(self):
+        """
+        Start the Telegram bot in a background thread.
+        """
+        if not self.is_configured():
+            self.logger.warning("Cannot start Telegram bot: not configured")
             return False
+            
+        if self.bot_thread is not None and self.bot_thread.is_alive():
+            self.logger.warning("Telegram bot already running")
+            return False
+            
+        self.stop_flag.clear()
+        self.bot_thread = threading.Thread(target=self._run_bot)
+        self.bot_thread.daemon = True
+        self.bot_thread.start()
+        self.logger.info("Telegram bot started")
+        return True
+        
+    def stop(self):
+        """
+        Stop the Telegram bot.
+        """
+        if self.bot_thread is not None:
+            self.stop_flag.set()
+            self.bot_thread.join(timeout=5.0)
+            self.bot_thread = None
+            self.logger.info("Telegram bot stopped")
